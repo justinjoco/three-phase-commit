@@ -4,9 +4,12 @@ Authors: Dilip Reddy (dr589), Justin Joco (jaj263), Zhilong Li (zl242)
 Slip days used(this project): _   
 
 Slip days used(total):
--Dilip (dr589): __
--Justin (jaj263): __
--Zhilong Li (zl252): __
+
+* Dilip (dr589): __
+
+* Justin (jaj263): __
+
+* Zhilong Li (zl252): __
 
 
 ## Verification 
