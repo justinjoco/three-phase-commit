@@ -1,12 +1,12 @@
 # Three Phase Commit (3PC) in Go
-Authors: Justin Joco (jaj263), Dilip Reddy (dr589)
+Authors: Dilip Reddy (dr589), Justin Joco (jaj263), Zhilong Li (zl242)
 
 Slip days used(this project): _   
 
-Justin (jaj263):
-  Slip days used(total): _
-Dilip (dr589):
-  Slip days used(total): _
+Slip days used(total):
+-Dilip (dr589): __
+-Justin (jaj263): __
+-Zhilong Li (zl252): __
 
 
 ## Verification 
