@@ -51,8 +51,62 @@ func (self *Server) run() {
 }
 
 func (self *Server) coordHandleMaster(lMaster net.Listener) {
-	// coordinator gets messeages from master, and then sends messages accordingly to participants
-	// runs 3pc coordinator algorithm
+	defer lMaster.Close()
+
+	connMaster, error := lMaster.Accept()
+	reader := bufio.NewReader(connMaster)
+	for {
+
+		if error != nil {
+			fmt.Println("Error while accepting connection")
+			continue
+		}
+
+		message, _ := reader.ReadString('\n')
+
+		message = strings.TrimSuffix(message, "\n")
+		message_slice := strings.Split(message, " ")
+
+		retMessage := ""
+		removeComma := 0
+		if message_slice[0] == "add" {
+			retMessage += "alive "
+			for _, port := range self.alive {
+				retMessage += port + ","
+				removeComma = 1
+			}
+
+			retMessage = retMessage[0 : len(retMessage)-removeComma]
+			lenStr := strconv.Itoa(len(retMessage))
+
+			retMessage = lenStr + "-" + retMessage
+
+		} else if message_slice[0] == "get" {
+			song_name := message_slice[1]
+			song_url := self.playlist[song_name]
+			if song_url == "" {
+				retMessage = "NONE"
+			} else {
+				retMessage = song_url
+			}
+
+			lenStr := strconv.Itoa(len(retMessage))
+			retMessage = lenStr + "-" + retMessage
+
+		} else if message_slice[0] == "delete"{
+
+			//self.three_pc();
+			
+		}else{
+
+			retMessage += "Invalid command. Use 'add <song> <url>', 'get', or 'delete <song>'"
+		}
+
+		connMaster.Write([]byte(retMessage))
+
+	}
+
+	connMaster.Close()
 }
 
 func (self *Server) participantHandleCoord() {
@@ -77,20 +131,8 @@ func (self *Server) participantHandleMaster(lMaster net.Listener) {
 		message_slice := strings.Split(message, " ")
 
 		retMessage := ""
-		removeComma := 0
-		if message_slice[0] == "alive" {
-			retMessage += "alive "
-			for _, port := range self.alive {
-				retMessage += port + ","
-				removeComma = 1
-			}
-
-			retMessage = retMessage[0 : len(retMessage)-removeComma]
-			lenStr := strconv.Itoa(len(retMessage))
-
-			retMessage = lenStr + "-" + retMessage
-
-		} else if message_slice[0] == "get" {
+		
+		if message_slice[0] == "get" {
 			song_name := message_slice[1]
 			song_url := self.playlist[song_name]
 			if song_url == "" {
@@ -102,15 +144,8 @@ func (self *Server) participantHandleMaster(lMaster net.Listener) {
 			lenStr := strconv.Itoa(len(retMessage))
 			retMessage = lenStr + "-" + retMessage
 
-		} else {
-
-			broadcastMessage := after(message, "broadcast ")
-			if broadcastMessage != "" {
-				self.messages = append(self.messages, broadcastMessage)
-				self.sendPeers(true, broadcastMessage)
-			} else {
-				retMessage += "Invalid command. Use 'get', 'alive', or 'broadcast <message>'"
-			}
+		} else {		
+			retMessage += "Invalid command. Use 'get', 'alive', or 'broadcast <message>'"
 		}
 
 		connMaster.Write([]byte(retMessage))
@@ -178,17 +213,11 @@ func (self *Server) sendPeers(broadcastMode bool, message string) {
 
 }
 
-func after(input string, target string) string {
-	pos := strings.LastIndex(input, target)
-	if pos == -1 {
-		return ""
-	}
-	adjustedPos := pos + len(target)
-	if adjustedPos >= len(input) {
-		return ""
-	}
-	return input[adjustedPos:len(input)]
+
+func (self *Server) three_pc(command string, args []string) string {
+	return ""
 }
+
 
 func (self *Server) write_DTLog(line string) {
 	/*
@@ -201,7 +230,7 @@ func (self *Server) write_DTLog(line string) {
 }
 
 func (self *Server) read_DTLog() string {
-	file_name := self.pid + "_DTLog.txt"
+	file_name :=  self.pid + "_DTLog.txt"
 	file, err := os.Open(file_name)
 	if err != nil {
 		// file doesnt exist yet, create one
