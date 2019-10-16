@@ -94,8 +94,9 @@ func (self *Server) coordHandleMaster(lMaster net.Listener) {
 			lenStr := strconv.Itoa(len(retMessage))
 			retMessage = lenStr + "-" + retMessage
 
-		} else {
-			retMessage += "Invalid command. This is the coordinator use 'add <song> <url>', 'get', or 'delete <song>'"
+
+		}else{
+			retMessage += "Invalid command. This is the coordinator use 'add <songName> <songURL>', 'get <songName>', or 'delete <songName>'"
 		}
 
 		connMaster.Write([]byte(retMessage))
@@ -104,6 +105,12 @@ func (self *Server) coordHandleMaster(lMaster net.Listener) {
 
 	connMaster.Close()
 }
+
+func (self *Server) coordHandleParticipants(){
+
+
+}
+
 
 func (self *Server) participantHandleCoord() {
 	// Participants get messages from coordinator, runs 3pc participant algorithm
@@ -125,10 +132,11 @@ func (self *Server) participantHandleMaster(lMaster net.Listener) {
 
 		message = strings.TrimSuffix(message, "\n")
 		message_slice := strings.Split(message, " ")
+		command := message_slice[0]
 
 		retMessage := ""
 
-		if message_slice[0] == "get" {
+		if command == "get" {
 			song_name := message_slice[1]
 			song_url := self.playlist[song_name]
 			if song_url == "" {
@@ -139,9 +147,8 @@ func (self *Server) participantHandleMaster(lMaster net.Listener) {
 
 			lenStr := strconv.Itoa(len(retMessage))
 			retMessage = lenStr + "-" + retMessage
-
-		} else {
-			retMessage += "Invalid command. This is a participant. Use 'get'"
+		} else {		
+			retMessage += "Invalid command. This is a participant. Use 'get <songName>'"
 		}
 
 		connMaster.Write([]byte(retMessage))
