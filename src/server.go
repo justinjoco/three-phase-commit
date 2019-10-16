@@ -99,7 +99,7 @@ func (self *Server) coordHandleMaster(lMaster net.Listener) {
 			
 		}else{
 
-			retMessage += "Invalid command. Use 'add <song> <url>', 'get', or 'delete <song>'"
+			retMessage += "Invalid command. This is the coordinator use 'add <song> <url>', 'get', or 'delete <song>'"
 		}
 
 		connMaster.Write([]byte(retMessage))
@@ -145,7 +145,7 @@ func (self *Server) participantHandleMaster(lMaster net.Listener) {
 			retMessage = lenStr + "-" + retMessage
 
 		} else {		
-			retMessage += "Invalid command. Use 'get', 'alive', or 'broadcast <message>'"
+			retMessage += "Invalid command. This is a participant. Use 'get'"
 		}
 
 		connMaster.Write([]byte(retMessage))
