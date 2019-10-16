@@ -14,15 +14,15 @@ import (
 )
 
 type Server struct {
-	pid           string
-	peers         []string
-	masterPort    string
-	peerPort      string
-	broadcastMode bool
-	alive         []string
-	messages      []string
-	playlist      map[string]string //dictionary of <song_name, song_URL>
-	is_coord      bool
+	pid              string
+	peers            []string
+	masterFacingPort string
+	peerFacingPort   string
+	broadcastMode    bool
+	up_set           []string
+	messages         []string
+	playlist         map[string]string //dictionary of <song_name, song_URL>
+	is_coord         bool
 }
 
 const (
@@ -34,8 +34,8 @@ func (self *Server) run() {
 
 	curr_log := self.read_DTLog()
 	fmt.Println(curr_log) // TODO: temp fix to use curr_log, remember to remove
-	lMaster, error := net.Listen(CONNECT_TYPE, CONNECT_HOST+":"+self.masterPort)
-	lPeer, error := net.Listen(CONNECT_TYPE, CONNECT_HOST+":"+self.peerPort)
+	lMaster, error := net.Listen(CONNECT_TYPE, CONNECT_HOST+":"+self.masterFacingPort)
+	lPeer, error := net.Listen(CONNECT_TYPE, CONNECT_HOST+":"+self.peerFacingPort)
 
 	if error != nil {
 		fmt.Println("Error listening!")
@@ -67,23 +67,23 @@ func (self *Server) coordHandleMaster(lMaster net.Listener) {
 
 		message = strings.TrimSuffix(message, "\n")
 		message_slice := strings.Split(message, " ")
+		command := message_slice[0]
+		args := message_slice[1:]
 
 		retMessage := ""
-		removeComma := 0
-		if message_slice[0] == "add" {
-			retMessage += "alive "
-			for _, port := range self.alive {
-				retMessage += port + ","
-				removeComma = 1
+		if command == "add" || command == "delete" {
+			retMessage += "ack "
+			commit_abort := self.three_pc(command, args)
+			if commit_abort {
+				retMessage = "commit"
+			} else {
+				retMessage = "abort"
 			}
-
-			retMessage = retMessage[0 : len(retMessage)-removeComma]
 			lenStr := strconv.Itoa(len(retMessage))
-
 			retMessage = lenStr + "-" + retMessage
 
-		} else if message_slice[0] == "get" {
-			song_name := message_slice[1]
+		} else if command == "get" {
+			song_name := args[0]
 			song_url := self.playlist[song_name]
 			if song_url == "" {
 				retMessage = "NONE"
@@ -94,13 +94,8 @@ func (self *Server) coordHandleMaster(lMaster net.Listener) {
 			lenStr := strconv.Itoa(len(retMessage))
 			retMessage = lenStr + "-" + retMessage
 
-		} else if message_slice[0] == "delete" {
-
-			//self.three_pc();
-
 		} else {
-
-			retMessage += "Invalid command. Use 'add <song> <url>', 'get', or 'delete <song>'"
+			retMessage += "Invalid command. This is the coordinator use 'add <song> <url>', 'get', or 'delete <song>'"
 		}
 
 		connMaster.Write([]byte(retMessage))
@@ -146,7 +141,7 @@ func (self *Server) participantHandleMaster(lMaster net.Listener) {
 			retMessage = lenStr + "-" + retMessage
 
 		} else {
-			retMessage += "Invalid command. Use 'get', 'alive', or 'broadcast <message>'"
+			retMessage += "Invalid command. This is a participant. Use 'get'"
 		}
 
 		connMaster.Write([]byte(retMessage))
@@ -189,7 +184,7 @@ func (self *Server) sendPeers(broadcastMode bool, message string) {
 
 		for _, otherPort := range self.peers {
 
-			if otherPort != self.peerPort {
+			if otherPort != self.peerFacingPort {
 				peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
 				if err != nil {
 					continue
@@ -208,14 +203,14 @@ func (self *Server) sendPeers(broadcastMode bool, message string) {
 
 		tempAlive = append(tempAlive, self.pid)
 		sort.Strings(tempAlive)
-		self.alive = tempAlive
+		self.up_set = tempAlive
 		time.Sleep(1000 * time.Millisecond)
 	}
 
 }
 
-func (self *Server) three_pc(command string, args []string) string {
-	return ""
+func (self *Server) three_pc(command string, args []string) bool {
+	return true
 }
 
 func (self *Server) write_DTLog(line string) {
