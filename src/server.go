@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 )
 
 type Server struct {
@@ -18,11 +19,10 @@ type Server struct {
 	peers            []string
 	masterFacingPort string
 	peerFacingPort   string
-	broadcastMode    bool
 	up_set           []string
-	messages         []string
 	playlist         map[string]string //dictionary of <song_name, song_URL>
 	is_coord         bool
+	state			 string
 }
 
 const (
@@ -41,7 +41,7 @@ func (self *Server) run() {
 		fmt.Println("Error listening!")
 	}
 
-	go self.sendPeers(false, "ping")
+	go self.heartbeat()
 	go self.receivePeers(lPeer)
 	if self.is_coord {
 		self.coordHandleMaster(lMaster)
@@ -73,7 +73,7 @@ func (self *Server) coordHandleMaster(lMaster net.Listener) {
 		retMessage := ""
 		if command == "add" || command == "delete" {
 			retMessage += "ack "
-			commit_abort := self.three_pc(command, args)
+			commit_abort := self.coordHandleParticipants(command, args)
 			if commit_abort {
 				retMessage = "commit"
 			} else {
@@ -106,14 +106,51 @@ func (self *Server) coordHandleMaster(lMaster net.Listener) {
 	connMaster.Close()
 }
 
-func (self *Server) coordHandleParticipants(){
+func (self *Server) coordHandleParticipants(command string, args []string) bool{
+	//ADD or DELETE request: sending + receiving
+	songName := ""
+	songURL := ""
+	if command == "add" {
+		songName = args[0]
+		songURL = args[1]
+		message := command + " " + songName + " " + songURL 
+		
+		for _, otherPort := range self.up_set {
+			go self.sendPeer(otherPort, message)
+		}
+
+	}else{
+		songName = args[0]
+		message := command + " " + songName
+		for _, otherPort := range self.up_set {
+			go self.sendPeer(otherPort, message)
+		}
+	}
+
+	self.write_DTLog(command + " start-3PC")
 
 
+	//Precommit Send + Receiving
+
+
+	self.write_DTLog(" ")
+	//Commit: Sending
+	self.write_DTLog(" ")
+
+	return true
 }
 
 
-func (self *Server) participantHandleCoord() {
-	// Participants get messages from coordinator, runs 3pc participant algorithm
+func (self *Server) participantHandleCoord(command string) {
+	//Receiving add/delete + sending YES/NO
+	self.write_DTLog(" ")
+
+	//Receiving PRECOMMIT + sending "ack"
+	self.write_DTLog(" ")
+
+
+	//Receiving COMMIT 
+	self.write_DTLog(" ")
 }
 
 func (self *Server) participantHandleMaster(lMaster net.Listener) {
@@ -173,9 +210,33 @@ func (self *Server) receivePeers(lPeer net.Listener) {
 		message, _ := bufio.NewReader(connPeer).ReadString('\n')
 		message = strings.TrimSuffix(message, "\n")
 		if message == "ping" {
-			connPeer.Write([]byte(self.pid))
+			fmt.Fprintf(connPeer, self.pid + "\n")
 		} else {
-			self.messages = append(self.messages, message)
+
+			message_slice := strings.Split(message, " ")
+			command := message_slice[0]
+			if command == "add"{
+				songName := message_slice[1]
+				songURL := message_slice[2]
+
+				urlSize := unsafe.Sizeof(songURL)
+				if urlSize > self.pid + 5 {
+					fmt.Fprintf(connPeer, "no\n")
+					self.write_DTLog("no")
+				}else{
+					fmt.Fprintf(connPeer, "yes\n")
+					self.write_DTLog("yes")
+				}
+
+			}else if command == "delete" {
+				fmt.Fprintf(connPeer, "yes\n")
+				self.write_DTLog("yes")
+
+			}else {
+				fmt.Fprintf(connPeer, "Invalid message\n")
+			}
+
+			
 		}
 		connPeer.Close()
 
@@ -183,7 +244,8 @@ func (self *Server) receivePeers(lPeer net.Listener) {
 
 }
 
-func (self *Server) sendPeers(broadcastMode bool, message string) {
+func (self *Server) heartbeat() {
+
 
 	for {
 
@@ -197,15 +259,11 @@ func (self *Server) sendPeers(broadcastMode bool, message string) {
 					continue
 				}
 
-				fmt.Fprintf(peerConn, message+"\n")
+				fmt.Fprintf(peerConn, "ping"+"\n")
 				response, _ := bufio.NewReader(peerConn).ReadString('\n')
 				tempAlive = append(tempAlive, response)
 			}
 
-		}
-
-		if broadcastMode {
-			break
 		}
 
 		tempAlive = append(tempAlive, self.pid)
@@ -216,9 +274,24 @@ func (self *Server) sendPeers(broadcastMode bool, message string) {
 
 }
 
-func (self *Server) three_pc(command string, args []string) bool {
-	return true
+func (self *Server) sendPeer(otherPort string, message string) {
+
+
+
+	if otherPort != self.peerFacingPort {
+		peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
+		if err != nil {
+			continue
+		}
+
+		fmt.Fprintf(peerConn, message+"\n")
+		response, _ := bufio.NewReader(peerConn).ReadString('\n')
+	}
+
 }
+
+
+
 
 func (self *Server) write_DTLog(line string) {
 	/*
