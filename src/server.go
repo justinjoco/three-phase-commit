@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -93,11 +94,11 @@ func (self *Server) coordHandleMaster(lMaster net.Listener) {
 			lenStr := strconv.Itoa(len(retMessage))
 			retMessage = lenStr + "-" + retMessage
 
-		} else if message_slice[0] == "delete"{
+		} else if message_slice[0] == "delete" {
 
 			//self.three_pc();
-			
-		}else{
+
+		} else {
 
 			retMessage += "Invalid command. Use 'add <song> <url>', 'get', or 'delete <song>'"
 		}
@@ -131,7 +132,7 @@ func (self *Server) participantHandleMaster(lMaster net.Listener) {
 		message_slice := strings.Split(message, " ")
 
 		retMessage := ""
-		
+
 		if message_slice[0] == "get" {
 			song_name := message_slice[1]
 			song_url := self.playlist[song_name]
@@ -144,7 +145,7 @@ func (self *Server) participantHandleMaster(lMaster net.Listener) {
 			lenStr := strconv.Itoa(len(retMessage))
 			retMessage = lenStr + "-" + retMessage
 
-		} else {		
+		} else {
 			retMessage += "Invalid command. Use 'get', 'alive', or 'broadcast <message>'"
 		}
 
@@ -213,25 +214,29 @@ func (self *Server) sendPeers(broadcastMode bool, message string) {
 
 }
 
-
 func (self *Server) three_pc(command string, args []string) string {
 	return ""
 }
-
 
 func (self *Server) write_DTLog(line string) {
 	/*
 		All lines in log will be lower case. The first line is always "start"
 	*/
+	path := "./logs"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		os.Mkdir(path, 0700) //creates the directory if not exist
+	}
 	file_name := self.pid + "_DTLog.txt"
-	f, _ := os.OpenFile(file_name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file_path := filepath.Join(path, file_name)
+	f, _ := os.OpenFile(file_path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	f.Write([]byte(line))
 	f.Close()
 }
 
 func (self *Server) read_DTLog() string {
-	file_name :=  self.pid + "_DTLog.txt"
-	file, err := os.Open(file_name)
+	file_name := self.pid + "_DTLog.txt"
+	file_path := filepath.Join("./logs", file_name)
+	file, err := os.Open(file_path)
 	if err != nil {
 		// file doesnt exist yet, create one
 		self.write_DTLog("start\n")
