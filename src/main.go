@@ -12,10 +12,10 @@ func main() {
 
 	serverId := args[0]
 	n, _ := strconv.Atoi(args[1])
-	masterPort := args[2]
+	masterFacingPort := args[2]
 	id_num, _ := strconv.Atoi(serverId)
 
-	peerPort := strconv.Itoa(20000 + id_num)
+	peerFacingPort := strconv.Itoa(20000 + id_num)
 
 	var peers []string
 	var server Server
@@ -25,12 +25,12 @@ func main() {
 		peers = append(peers, peerStr)
 	}
 
-	if masterPort == "10002" { // this is only on first startup
-		server = Server{pid: serverId, peers: peers, masterPort: masterPort,
-			peerPort: peerPort, broadcastMode: false, is_coord: true}
+	if masterFacingPort == "10002" { // this is only on first startup
+		server = Server{pid: serverId, peers: peers, masterFacingPort: masterFacingPort,
+			peerFacingPort: peerFacingPort, broadcastMode: false, is_coord: true}
 	} else {
-		server = Server{pid: serverId, peers: peers, masterPort: masterPort,
-			peerPort: peerPort, broadcastMode: false, is_coord: false}
+		server = Server{pid: serverId, peers: peers, masterFacingPort: masterFacingPort,
+			peerFacingPort: peerFacingPort, broadcastMode: false, is_coord: false}
 	}
 
 	server.run()
