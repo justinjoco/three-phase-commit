@@ -63,7 +63,6 @@ class ClientHandler(Thread):
                         self.buffer+=data
                     else:
                         # Now extract header
-
                         (header,msg)= self.buffer.split("-",1)
                         msgLen = int(header)
                         self.buffer = msg
