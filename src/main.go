@@ -25,6 +25,8 @@ func main() {
 		peers = append(peers, peerStr)
 	}
 
+
+	
 	if masterFacingPort == "10002" { // this is only on first startup
 		server = Server{pid: serverId, peers: peers, masterFacingPort: masterFacingPort,
 			peerFacingPort: peerFacingPort, is_coord: true, playlist: make(map[string]string)}
