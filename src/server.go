@@ -212,8 +212,12 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 	command := message_slice[0]
 	fmt.Println(command)
 	if command == "add"{
+
 		songName := message_slice[1]
 		songURL := message_slice[2]
+		if !self.is_coord{
+			self.write_DTLog(message)
+		}
 		songQuery := map[string]string{
 			"songName": songName,
 			"songURL": songURL,
@@ -224,13 +228,18 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 		pid, _ := strconv.Atoi(self.pid)
 		if urlSize > pid + 5 {
 			connCoord.Write([]byte("no"))
-			self.write_DTLog("no")
 		}else{
 			connCoord.Write([]byte("yes"))
-			self.write_DTLog("yes")
+			if !self.is_coord{
+				self.write_DTLog("yes")
+			}
 		}
 
+	
 	}else if command == "delete" {
+		if !self.is_coord{
+			self.write_DTLog(message)
+		}
 		songName := message_slice[1]
 		self.request = "delete"
 		songQuery := map[string]string{
@@ -241,22 +250,33 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 		self.songQuery = songQuery
 
 		connCoord.Write([]byte("yes"))
-		self.write_DTLog("yes")
+
+		if !self.is_coord{
+			self.write_DTLog("yes")
+		}
+		
 
 	}else if command == "precommit"{
 		connCoord.Write([]byte("ack"))
 	} else if command == "commit" {
 		fmt.Println("commiting add/delete request")
+
 		if self.request == "add" {
 			self.playlist[self.songQuery["songName"]] = self.songQuery["songURL"]
 		} else{
 			delete(self.playlist, self.songQuery["songName"])
 		}
-		self.write_DTLog("commit")
 
+		if !self.is_coord{
+			self.write_DTLog("commit")
+		}
 	} else if command == "abort" {
 		fmt.Println("abort request")
-		self.write_DTLog("abort")
+
+		if !self.is_coord{
+			self.write_DTLog("abort")
+		}
+		
 	} else {
 		connCoord.Write([]byte("Invalid message"))
 	}
