@@ -27,10 +27,10 @@ func main() {
 
 	if masterFacingPort == "10002" { // this is only on first startup
 		server = Server{pid: serverId, peers: peers, masterFacingPort: masterFacingPort,
-			peerFacingPort: peerFacingPort, broadcastMode: false, is_coord: true}
+			peerFacingPort: peerFacingPort, is_coord: true, playlist: make(map[string]string)}
 	} else {
 		server = Server{pid: serverId, peers: peers, masterFacingPort: masterFacingPort,
-			peerFacingPort: peerFacingPort, broadcastMode: false, is_coord: false}
+			peerFacingPort: peerFacingPort, is_coord: false, playlist: make(map[string]string)}
 	}
 
 	server.run()

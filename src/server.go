@@ -7,11 +7,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 )
 
 type Server struct {
@@ -19,10 +17,12 @@ type Server struct {
 	peers            []string
 	masterFacingPort string
 	peerFacingPort   string
-	up_set           []string
+	up_set           map[string]string //maps a process's pid to its portfacing number
 	playlist         map[string]string //dictionary of <song_name, song_URL>
 	is_coord         bool
-	state			 string
+	state			 string 			//Saves the current state of process: TODO
+	songQuery        map[string]string //map containing the song's name and URL for deletion or adding
+	request			 string            //Saved add or delete command 
 }
 
 const (
@@ -55,6 +55,9 @@ func (self *Server) coordHandleMaster(lMaster net.Listener) {
 	defer lMaster.Close()
 
 	connMaster, error := lMaster.Accept()
+	coordMessage := "coordinator " + self.pid
+	coordLenStr := strconv.Itoa(len(coordMessage))
+	connMaster.Write([]byte(coordLenStr + "-" +coordMessage))
 	reader := bufio.NewReader(connMaster)
 	for {
 
@@ -75,20 +78,21 @@ func (self *Server) coordHandleMaster(lMaster net.Listener) {
 			retMessage += "ack "
 			commit_abort := self.coordHandleParticipants(command, args)
 			if commit_abort {
-				retMessage = "commit"
+				retMessage += "commit"
 			} else {
-				retMessage = "abort"
+				retMessage += "abort"
 			}
 			lenStr := strconv.Itoa(len(retMessage))
 			retMessage = lenStr + "-" + retMessage
 
 		} else if command == "get" {
+			retMessage += "resp "
 			song_name := args[0]
 			song_url := self.playlist[song_name]
 			if song_url == "" {
-				retMessage = "NONE"
+				retMessage += "NONE"
 			} else {
-				retMessage = song_url
+				retMessage += song_url
 			}
 
 			lenStr := strconv.Itoa(len(retMessage))
@@ -110,47 +114,155 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool{
 	//ADD or DELETE request: sending + receiving
 	songName := ""
 	songURL := ""
+	numUp := len(self.up_set)
+	retBool := false
+	participantChannel := make(chan string)
+	self.write_DTLog(command + " start-3PC")
+	fmt.Println("Sending VOTE-REQ")
 	if command == "add" {
 		songName = args[0]
 		songURL = args[1]
 		message := command + " " + songName + " " + songURL 
 		
 		for _, otherPort := range self.up_set {
-			go self.sendPeer(otherPort, message)
+			go self.msgParticipant(otherPort, message, participantChannel)
 		}
 
 	}else{
 		songName = args[0]
 		message := command + " " + songName
 		for _, otherPort := range self.up_set {
-			go self.sendPeer(otherPort, message)
+			go self.msgParticipant(otherPort, message, participantChannel)
 		}
 	}
 
-	self.write_DTLog(command + " start-3PC")
+
+	//VOTE-REQ
+	yes_votes := 0
+	num_voted := 0
+	vote_success := false
+	for start := time.Now(); time.Since(start) < time.Second; {
+		if num_voted == numUp {
+			fmt.Println("All votes say yes! Send precommit!")
+			if yes_votes == num_voted {
+				vote_success = true
+			}
+			break
+		}
+		select{
+			case response := <- participantChannel:
+				if response == "yes" {
+					yes_votes+=1
+				}
+				num_voted += 1
+		}
+	}
+
 
 
 	//Precommit Send + Receiving
+	if vote_success {
+		self.write_DTLog("precommit")
+		for _, otherPort := range self.up_set {
+			go self.msgParticipant(otherPort, "precommit\n", participantChannel)
+		}
+		ack_success := false
+		ack_votes := 0
+		for start := time.Now(); time.Since(start) < time.Second; {
+			if ack_votes == numUp {
+				fmt.Println("All precommits acknowledged!")
+				ack_success = true
+				break
+			}
+			select{
+				case response := <- participantChannel:
+					if response == "ack\n" {
+						break
+					}else{
+						ack_votes+=1
+					}
+			}
+		}
 
+		//COMMIT SENDING
+		if ack_success {
+			retBool = true
+			self.write_DTLog("commit")
+			for _, otherPort := range self.up_set {
+				go self.msgParticipant(otherPort, "commit\n", participantChannel)
+			}
 
-	self.write_DTLog(" ")
-	//Commit: Sending
-	self.write_DTLog(" ")
+			fmt.Println("Commit sent!")
+		}
+	} else{
+		//ABORT SENDING
+		self.write_DTLog("abort")
+		for _, otherPort := range self.up_set {
+			go self.msgParticipant(otherPort, "abort\n", participantChannel)
+		}
+	}
 
-	return true
+	return retBool
 }
 
 
-func (self *Server) participantHandleCoord(command string) {
+func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 	//Receiving add/delete + sending YES/NO
-	self.write_DTLog(" ")
+	message_slice := strings.Split(message, " ")
+	command := message_slice[0]
+	fmt.Println(command)
+	if command == "add"{
+		songName := message_slice[1]
+		songURL := message_slice[2]
+		songQuery := map[string]string{
+			"songName": songName,
+			"songURL": songURL,
+		}		
+		self.request = "add"
+		self.songQuery = songQuery
+		urlSize := len(songURL)
+		pid, _ := strconv.Atoi(self.pid)
+		if urlSize > pid + 5 {
+			connCoord.Write([]byte("no"))
+			self.write_DTLog("no")
+		}else{
+			connCoord.Write([]byte("yes"))
+			self.write_DTLog("yes")
+		}
 
-	//Receiving PRECOMMIT + sending "ack"
-	self.write_DTLog(" ")
+	}else if command == "delete" {
+		songName := message_slice[1]
+		self.request = "delete"
+		songQuery := map[string]string{
+			"songName": songName,
+			"songURL": "",
+		}		
+		self.request = "delete"
+		self.songQuery = songQuery
+
+		connCoord.Write([]byte("yes"))
+		self.write_DTLog("yes")
+
+	}else if command == "precommit"{
+		connCoord.Write([]byte("ack"))
+	} else if command == "commit" {
+		fmt.Println("commiting add/delete request")
+		if self.request == "add" {
+			self.playlist[self.songQuery["songName"]] = self.songQuery["songURL"]
+		} else{
+			delete(self.playlist, self.songQuery["songName"])
+		}
+		self.write_DTLog("commit")
+
+	} else if command == "abort" {
+		fmt.Println("abort request")
+		self.write_DTLog("abort")
+	} else {
+		connCoord.Write([]byte("Invalid message"))
+	}
 
 
-	//Receiving COMMIT 
-	self.write_DTLog(" ")
+
 }
 
 func (self *Server) participantHandleMaster(lMaster net.Listener) {
@@ -174,13 +286,16 @@ func (self *Server) participantHandleMaster(lMaster net.Listener) {
 		retMessage := ""
 
 		if command == "get" {
+			retMessage += "resp "
 			song_name := message_slice[1]
-			song_url := self.playlist[song_name]
-			if song_url == "" {
-				retMessage = "NONE"
-			} else {
-				retMessage = song_url
+			if song_url, ok := self.playlist[song_name]; ok {
+				retMessage += song_url
+			} else{
+				retMessage += "NONE"
 			}
+		
+			fmt.Println(self.playlist)
+
 
 			lenStr := strconv.Itoa(len(retMessage))
 			retMessage = lenStr + "-" + retMessage
@@ -210,33 +325,9 @@ func (self *Server) receivePeers(lPeer net.Listener) {
 		message, _ := bufio.NewReader(connPeer).ReadString('\n')
 		message = strings.TrimSuffix(message, "\n")
 		if message == "ping" {
-			fmt.Fprintf(connPeer, self.pid + "\n")
+			connPeer.Write([]byte(self.pid))
 		} else {
-
-			message_slice := strings.Split(message, " ")
-			command := message_slice[0]
-			if command == "add"{
-				songName := message_slice[1]
-				songURL := message_slice[2]
-
-				urlSize := unsafe.Sizeof(songURL)
-				if urlSize > self.pid + 5 {
-					fmt.Fprintf(connPeer, "no\n")
-					self.write_DTLog("no")
-				}else{
-					fmt.Fprintf(connPeer, "yes\n")
-					self.write_DTLog("yes")
-				}
-
-			}else if command == "delete" {
-				fmt.Fprintf(connPeer, "yes\n")
-				self.write_DTLog("yes")
-
-			}else {
-				fmt.Fprintf(connPeer, "Invalid message\n")
-			}
-
-			
+			self.participantHandleCoord(message, connPeer)
 		}
 		connPeer.Close()
 
@@ -249,45 +340,42 @@ func (self *Server) heartbeat() {
 
 	for {
 
-		var tempAlive []string
+		tempAlive := make(map[string]string)
 
 		for _, otherPort := range self.peers {
 
-			if otherPort != self.peerFacingPort {
-				peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
-				if err != nil {
-					continue
-				}
-
-				fmt.Fprintf(peerConn, "ping"+"\n")
-				response, _ := bufio.NewReader(peerConn).ReadString('\n')
-				tempAlive = append(tempAlive, response)
+			peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
+			if err != nil {
+				continue
 			}
+
+			fmt.Fprintf(peerConn, "ping"+"\n")
+			response, _ := bufio.NewReader(peerConn).ReadString('\n')
+			tempAlive[response] = otherPort
 
 		}
 
-		tempAlive = append(tempAlive, self.pid)
-		sort.Strings(tempAlive)
+
 		self.up_set = tempAlive
 		time.Sleep(1000 * time.Millisecond)
+
 	}
 
 }
 
-func (self *Server) sendPeer(otherPort string, message string) {
-
-
-
-	if otherPort != self.peerFacingPort {
-		peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
-		if err != nil {
-			continue
-		}
-
-		fmt.Fprintf(peerConn, message+"\n")
-		response, _ := bufio.NewReader(peerConn).ReadString('\n')
+func (self *Server) msgParticipant(otherPort string, message string, channel chan string) {
+	
+	peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
+	if err != nil {
+		fmt.Println(err)
 	}
 
+	fmt.Fprintf(peerConn, message+"\n")
+	response, _ := bufio.NewReader(peerConn).ReadString('\n')
+
+	fmt.Println(response)
+	channel <- response
+	
 }
 
 
@@ -304,7 +392,7 @@ func (self *Server) write_DTLog(line string) {
 	file_name := self.pid + "_DTLog.txt"
 	file_path := filepath.Join(path, file_name)
 	f, _ := os.OpenFile(file_path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	f.Write([]byte(line))
+	f.Write([]byte(line + "\n"))
 	f.Close()
 }
 
