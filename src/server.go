@@ -213,6 +213,7 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 	retBool := false
 	participantChannel := make(chan string)
 	self.write_DTLog(command + " start-3PC")
+	// broadcast "start" to all participants, after p receives start, it knows to wait for vote_req
 	fmt.Println("Sending VOTE-REQ")
 	//Using switch to avoid having a lot of if-else statements
 	switch command {
@@ -280,6 +281,9 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 			num_voted += 1
 		}
 	}
+
+	//Time has past or got votes from everyone
+	// if timeout, send ABORT to everyone
 
 	//Precommit Send + Receiving
 	if vote_success {
@@ -382,8 +386,10 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 		pid, _ := strconv.Atoi(self.pid)
 		if urlSize > pid+5 {
 			connCoord.Write([]byte("no"))
+			self.state = "aborted"
 		} else {
 			connCoord.Write([]byte("yes"))
+			self.state = "uncertain"
 			if !self.is_coord {
 				self.write_DTLog("yes")
 			}
@@ -409,7 +415,7 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 		self.songQuery = songQuery
 
 		connCoord.Write([]byte("yes"))
-
+		self.state = "uncertain"
 		if !self.is_coord {
 			self.write_DTLog("yes")
 		}
@@ -420,13 +426,14 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 	//Send back ack on precommit receipt
 	case "precommit":
 		connCoord.Write([]byte("ack"))
+		self.state = "committable"
 		if self.crashStage == "after_ack" {
 			os.Exit(1)
 		}
 	//Adds song to playlist or deletes song in playlist on commit receipt
 	case "commit":
 		fmt.Println("commiting add/delete request")
-
+		self.state = "committed"
 		if self.request == "add" {
 			self.playlist[self.songQuery["songName"]] = self.songQuery["songURL"]
 		} else {
@@ -439,9 +446,12 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 	//Aborts 3PC on abort receipt
 	case "abort":
 		fmt.Println("abort request")
+		self.state = "aborted"
 		if !self.is_coord {
 			self.write_DTLog("abort")
 		}
+	case "state_req":
+		connCoord.Write([]byte(self.state)) // TODO: update state for each process
 	//No valid message given
 	default:
 		connCoord.Write([]byte("Invalid message"))
@@ -474,6 +484,10 @@ func (self *Server) receivePeers(lPeer net.Listener) {
 
 	}
 
+}
+
+func (self *Server) electNewCoord() {
+	int_ids := make([]int)
 }
 
 //Updates UP set on heartbeat replies
