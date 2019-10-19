@@ -487,7 +487,10 @@ func (self *Server) receivePeers(lPeer net.Listener) {
 }
 
 func (self *Server) electNewCoord() {
-	int_ids := make([]int)
+	int_ids := make([]int, len(self.up_set))
+	for k := range self.up_set {
+		int_ids = append(int_ids, strconv.Atoi(k))
+	}
 }
 
 //Updates UP set on heartbeat replies
