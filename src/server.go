@@ -505,7 +505,21 @@ func (self *Server) electNewCoord() {
 			min = int_id
 		}
 	}
+	
 
+	if strconv.Itoa(min) == self.pid{
+		self.is_coord = true
+	} else{
+
+		newLeaderConn, err := net.Dial("tcp", "127.0.0.1:"+ self.up_set[strconv.Itoa(min)])
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		fmt.Fprintf(newLeaderConn, "ur_elected"+"\n")
+		response, _ := bufio.NewReader(newLeaderConn).ReadString('\n')
+		fmt.Println(response)
+	}
 
 
 }
