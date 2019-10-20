@@ -28,6 +28,7 @@ type Server struct {
 	sentTo []string //A list of processes that the coordinator has sent command to before crash
 	//If it's a participant, this will be an empty list all the time
 	waitingFor string // "precommit"||"abort"||"commit"
+	coordID    string // Each process will keep track of the id of the current coord
 }
 
 const (
@@ -46,15 +47,13 @@ func (self *Server) run() {
 	if error != nil {
 		fmt.Println("Error listening!")
 	}
-
+	defer lMaster.Close()
+	connMaster, err := lMaster.Accept()
 	//Update UP set on each heartbeat iteration
-	go self.heartbeat()
+	go self.heartbeat(connMaster, err)
 
 	//Listen on peer facing port
 	go self.receivePeers(lPeer)
-
-	defer lMaster.Close()
-	connMaster, err := lMaster.Accept()
 
 	if self.is_coord {
 		self.coordHandleMaster(connMaster, err) //Adding peerFacing port to close if process crashed
@@ -65,19 +64,13 @@ func (self *Server) run() {
 }
 
 //Coordinator handles master's commands (add, delete, get, crash operations)
-func (self *Server) coordHandleMaster(connMaster net.Conn, err error) {
-	//defer lMaster.Close()
-
-	//connMaster, error := lMaster.Accept()
+func (self *Server) handleMaster(connMaster net.Conn, err error) {
 	coordMessage := "coordinator " + self.pid
 	coordLenStr := strconv.Itoa(len(coordMessage))
 	connMaster.Write([]byte(coordLenStr + "-" + coordMessage))
 	reader := bufio.NewReader(connMaster)
+	fmt.Println("IM THE COORD HANDLING MASTER")
 	for {
-
-		if err != nil {
-			fmt.Println(err)
-		}
 
 		message, _ := reader.ReadString('\n')
 
@@ -87,7 +80,7 @@ func (self *Server) coordHandleMaster(connMaster net.Conn, err error) {
 		args := message_slice[1:]
 
 		retMessage := ""
-		fmt.Println(message)
+		// fmt.Println(message)
 
 		switch command {
 		//Start 3PC instance
@@ -134,6 +127,18 @@ func (self *Server) coordHandleMaster(connMaster net.Conn, err error) {
 			fmt.Println("Crashing after sending commit to ...")
 			self.crashStage = "partial_commit"
 			self.sentTo = args
+			//TODO
+		case "crashAfterVote":
+			fmt.Println("Will crash after voting in next 3PC instance")
+			self.crashStage = "after_vote"
+		//TODO
+		case "crashBeforeVote":
+			fmt.Println("Will crash before voting in next 3PC instance")
+			self.crashStage = "before_vote"
+		//TODO
+		case "crashAfterAck":
+			fmt.Println("Will crash after sending ACK in next 3PC instance")
+			self.crashStage = "after_ack"
 		default:
 			retMessage += "Invalid command. This is the coordinator use 'add <songName> <songURL>', 'get <songName>', or 'delete <songName>'"
 
@@ -147,9 +152,8 @@ func (self *Server) coordHandleMaster(connMaster net.Conn, err error) {
 
 //Participant handles master's commands (get and crash operations)
 func (self *Server) participantHandleMaster(connMaster net.Conn, err error) {
-	//defer lMaster.Close()
+	fmt.Println("IAM THE PARTITCIPATN AND IM HANDLING MASTER")
 
-	//	connMaster, error := lMaster.Accept()
 	reader := bufio.NewReader(connMaster)
 	for {
 
@@ -158,8 +162,9 @@ func (self *Server) participantHandleMaster(connMaster net.Conn, err error) {
 			fmt.Println(err)
 			// continue
 		}
+		fmt.Println(self.is_coord)
 		if self.is_coord {
-			self.coordHandleMaster(connMaster, err)
+			break
 		}
 
 		message, _ := reader.ReadString('\n')
@@ -207,8 +212,8 @@ func (self *Server) participantHandleMaster(connMaster net.Conn, err error) {
 		connMaster.Write([]byte(retMessage))
 
 	}
-
-	connMaster.Close()
+	// connMaster.Close()
+	self.coordHandleMaster(connMaster, err)
 
 }
 
@@ -533,7 +538,11 @@ func (self *Server) receivePeers(lPeer net.Listener) {
 		if message != "ping" {
 			self.participantHandleCoord(message, connPeer)
 		} else {
-			connPeer.Write([]byte(self.pid))
+			if self.is_coord {
+				connPeer.Write([]byte(self.pid + " +"))
+			} else {
+				connPeer.Write([]byte(self.pid + " -"))
+			}
 		}
 		connPeer.Close()
 
@@ -541,18 +550,28 @@ func (self *Server) receivePeers(lPeer net.Listener) {
 
 }
 
-func (self *Server) electNewCoord() {
+func (self *Server) electNewCoord(connMaster net.Conn, err error) {
+	fmt.Println("running election")
 	min := 1000000
-	for _, id := range self.up_set {
+	for id, _ := range self.up_set {
 		int_id, _ := strconv.Atoi(id)
 		if int_id < min {
 			min = int_id
 		}
 	}
-
+	fmt.Println("+++++++++++++++++++++++++++++++++++++")
+	fmt.Println(self.up_set)
+	fmt.Println(min)
+	fmt.Println("+++++++++++++++++++++++++++++++++++++")
 	if strconv.Itoa(min) == self.pid {
+		fmt.Println("I am the coordinator")
 		self.is_coord = true
+		self.coordID = self.pid
+		// just send my pid to master
+		// self.coordHandleMaster(connMaster, err)
+
 	} else {
+		fmt.Println("Someone else is the coordinator")
 		newLeaderConn, err := net.Dial("tcp", "127.0.0.1:"+self.up_set[strconv.Itoa(min)])
 		if err != nil {
 			fmt.Println(err)
@@ -575,12 +594,12 @@ func (self *Server) recover() {
 }
 
 //Updates UP set on heartbeat replies
-func (self *Server) heartbeat() {
+func (self *Server) heartbeat(connMaster net.Conn, err error) {
 
 	for {
 
 		tempAlive := make(map[string]string)
-
+		tempCoordID := self.coordID
 		for _, otherPort := range self.peers {
 
 			peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
@@ -590,11 +609,26 @@ func (self *Server) heartbeat() {
 
 			fmt.Fprintf(peerConn, "ping"+"\n")
 			response, _ := bufio.NewReader(peerConn).ReadString('\n')
-			tempAlive[response] = otherPort
-
+			response_slice := strings.Split(response, " ")
+			pid := response_slice[0]
+			coord_bool := response_slice[1]
+			tempAlive[pid] = otherPort
+			if coord_bool == "+" {
+				tempCoordID = pid
+			}
+		}
+		self.up_set = tempAlive
+		fmt.Println("======================================")
+		fmt.Println(tempCoordID)
+		fmt.Println(self.up_set)
+		if tempCoordID != "" {
+			if _, ok := self.up_set[tempCoordID]; !ok {
+				fmt.Println("NOT OK")
+				self.electNewCoord(connMaster, err)
+			}
 		}
 
-		self.up_set = tempAlive
+		self.coordID = tempCoordID
 		time.Sleep(1000 * time.Millisecond)
 
 	}
