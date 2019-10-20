@@ -594,7 +594,7 @@ func (self *Server) terminationProtocol(connMaster net.Conn) {
 
 }
 
-func (self *Server) recovery(file File*) {
+func (self *Server) recovery(file *os.File) {
 	fmt.Println("RECOVERING")
 }
 
