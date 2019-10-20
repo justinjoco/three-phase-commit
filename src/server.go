@@ -47,6 +47,7 @@ func (self *Server) run() {
 	if error != nil {
 		fmt.Println("Error listening!")
 	}
+
 	defer lMaster.Close()
 	connMaster, err := lMaster.Accept()
 	//Update UP set on each heartbeat iteration
@@ -151,7 +152,7 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 	//ADD or DELETE request: sending + receiving
 	songName := ""
 	songURL := ""
-	numUp := len(self.up_set)
+	numUpForVote := len(self.up_set)
 	retBool := false
 	participantChannel := make(chan string)
 	self.write_DTLog(command + " start-3PC")
@@ -220,7 +221,7 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 
 	//Timeout on 1 second passing
 	for start := time.Now(); time.Since(start) < time.Second; {
-		if num_voted == numUp {
+		if num_voted == numUpForVote {
 			fmt.Println("All votes gathered!")
 			if yes_votes == num_voted {
 				vote_success = true
@@ -241,7 +242,9 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 
 	//Precommit Send + Receiving
 	if vote_success {
-		self.write_DTLog("precommit")
+
+		numUpForAck := len(self.up_set)
+
 		if self.crashStage != "partial_precommit" {
 			for _, otherPort := range self.up_set {
 				go self.msgParticipant(otherPort, "precommit\n", participantChannel) // vote-req
@@ -261,14 +264,13 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 			}
 			os.Exit(1)
 		}
-		ack_success := false
+	
 		ack_votes := 0
 
 		//Timeout on 1 second passing
 		for start := time.Now(); time.Since(start) < time.Second; {
-			if ack_votes == numUp {
+			if ack_votes == numUpForAck {
 				fmt.Println("All precommits acknowledged!")
-				ack_success = true
 				break
 			}
 			select {
@@ -282,32 +284,31 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 			}
 		}
 
-		//Send commit to participants
-		if ack_success {
-			retBool = true
-			self.write_DTLog("commit")
-			if self.crashStage != "partial_commit" {
-				for _, otherPort := range self.up_set {
-					go self.msgParticipant(otherPort, "commit\n", participantChannel) // vote-req
-				}
-			} else {
-				if len(self.sentTo) == 0 {
-					os.Exit(1)
-				}
-				for _, otherID := range self.sentTo {
-					if otherPort, ok := self.up_set[otherID]; ok {
-						peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
-						if err != nil {
-							fmt.Println(err)
-						}
-						fmt.Fprintf(peerConn, "commit\n")
-					}
-				}
+		//Send commit to participants	
+		retBool = true
+		self.write_DTLog("commit")
+		if self.crashStage != "partial_commit" {
+			for _, otherPort := range self.up_set {
+				go self.msgParticipant(otherPort, "commit\n", participantChannel) // vote-req
+			}
+		} else {
+			if len(self.sentTo) == 0 {
 				os.Exit(1)
 			}
-
-			fmt.Println("Commit sent!")
+			for _, otherID := range self.sentTo {
+				if otherPort, ok := self.up_set[otherID]; ok {
+					peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
+					if err != nil {
+						fmt.Println(err)
+					}
+					fmt.Fprintf(peerConn, "commit\n")
+				}
+			}
+			os.Exit(1)
 		}
+
+		fmt.Println("Commit sent!")
+		
 	} else {
 		//Send abort to participants
 		self.write_DTLog("abort")
@@ -324,15 +325,14 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 	//Receiving add/delete + sending YES/NO
 	message_slice := strings.Split(message, " ")
 	command := message_slice[0]
-	fmt.Println("++++++++++++++++++++++")
 
 	command = strings.Trim(command, "\n")
-	fmt.Println(command)
-	fmt.Println(len(command))
+
 	//On add or delete, this server records the input song's info and its add/delete operation for future 3PC stages
 	switch command {
 	//Sends no to coord if songUrl is bigger than self.pid + 5; yes otherwise -> records vote in DT log
 	case "add":
+		self.state = "aborted"
 		songName := message_slice[1]
 		songURL := message_slice[2]
 		if !self.is_coord {
@@ -351,7 +351,6 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 		pid, _ := strconv.Atoi(self.pid)
 		if urlSize > pid+5 {
 			connCoord.Write([]byte("no"))
-			self.state = "aborted"
 		} else {
 			connCoord.Write([]byte("yes")) // sending back to the coordinator, now need to wait for precommit
 			self.waitingFor = "precommit"
@@ -365,6 +364,7 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 		}
 	//Always send yes to coord and records vote in DT log
 	case "delete":
+		self.state = "aborted"
 		if !self.is_coord {
 			self.write_DTLog(message)
 		} // record message before crashing
@@ -392,34 +392,39 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 
 	//Send back ack on precommit receipt
 	case "precommit":
-		connCoord.Write([]byte("ack"))
-		self.waitingFor = "commit"
-		self.state = "committable"
-		if self.crashStage == "after_ack" {
-			os.Exit(1)
+		if self.state == "uncertain"{
+			connCoord.Write([]byte("ack"))
+			self.waitingFor = "commit"
+			self.state = "committable"
+			if self.crashStage == "after_ack" {
+				os.Exit(1)
+			}
 		}
 	//Adds song to playlist or deletes song in playlist on commit receipt
 	case "commit":
-		fmt.Println("commiting add/delete request")
-		self.state = "committed"
-		if self.request == "add" {
-			self.playlist[self.songQuery["songName"]] = self.songQuery["songURL"]
-		} else {
-			delete(self.playlist, self.songQuery["songName"])
-		}
-		self.waitingFor = ""
-
-		if !self.is_coord {
-			self.write_DTLog("commit")
+		fmt.Println("COMMITTING")
+		if self.state == "committable" {
+			if self.request == "add" {
+				self.playlist[self.songQuery["songName"]] = self.songQuery["songURL"]
+			} else {
+				delete(self.playlist, self.songQuery["songName"])
+			}
+			self.waitingFor = ""
+			self.state = "committed"
+			if !self.is_coord {
+				self.write_DTLog("commit")
+			}
 		}
 	//Aborts 3PC on abort receipt
 	case "abort":
-		fmt.Println("abort request")
-		self.state = "aborted"
-		if !self.is_coord {
-			self.write_DTLog("abort")
+		fmt.Println("ABORTING")
+		if self.state != "aborted"{
+			if !self.is_coord {
+				self.write_DTLog("abort")
+			}
+			self.state = "aborted"
+			self.waitingFor = ""
 		}
-		self.waitingFor = ""
 	case "state_req":
 		connCoord.Write([]byte(self.state)) // TODO: update state for each process
 	case "ur_elected":
@@ -443,29 +448,14 @@ func (self *Server) receivePeers(lPeer net.Listener) {
 			fmt.Println("Error while accepting connection")
 			continue
 		}
-		fmt.Println("Now waiting for: " + self.waitingFor)
+	
 		recvBuf := make([]byte, 1024)
-		connPeer.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, err := connPeer.Read(recvBuf[:])
-		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() { // timeout error
-				if self.waitingFor == "" { // Not waiting for anything, if timeout, ignore?
-					fmt.Println("Error while accepting connection")
-					continue
-				} else if self.waitingFor == "precommit" || self.waitingFor == "abort" {
-					fmt.Println("timeout on precommit or abort")
-					continue
-				} else { // waiting for commit message, handle separately
-					fmt.Println("timeout on commit")
-					continue
-				}
-			}
-		}
+		n, _ := connPeer.Read(recvBuf[:])
+
 
 		// No timeout, get the message and continue as normal
 		message := string(recvBuf[:n])
 		message = strings.TrimSuffix(message, "\n")
-		fmt.Println("got msg")
 		if message != "ping" {
 			self.participantHandleCoord(message, connPeer)
 		} else {
@@ -482,7 +472,7 @@ func (self *Server) receivePeers(lPeer net.Listener) {
 }
 
 func (self *Server) electNewCoord(connMaster net.Conn, err error) {
-	fmt.Println("running election")
+	fmt.Println("RUNNING ELECTION")
 	min := 1000000
 	for id, _ := range self.up_set {
 		int_id, _ := strconv.Atoi(id)
@@ -491,6 +481,7 @@ func (self *Server) electNewCoord(connMaster net.Conn, err error) {
 		}
 	}
 
+	fmt.Println("ELECTING NEW COORD")
 	if strconv.Itoa(min) == self.pid {
 		fmt.Println("I am the coordinator")
 		self.is_coord = true
@@ -500,28 +491,111 @@ func (self *Server) electNewCoord(connMaster net.Conn, err error) {
 		coordMessage := "coordinator " + self.pid
 		coordLenStr := strconv.Itoa(len(coordMessage))
 		connMaster.Write([]byte(coordLenStr + "-" + coordMessage))
+		self.terminationProtocol(connMaster)
 
 	} else {
 		fmt.Println("Someone else is the coordinator")
-		newLeaderConn, err := net.Dial("tcp", "127.0.0.1:"+self.up_set[strconv.Itoa(min)])
-		if err != nil {
-			fmt.Println(err)
-		}
 
-		fmt.Fprintf(newLeaderConn, "ur_elected"+"\n")
-		response, _ := bufio.NewReader(newLeaderConn).ReadString('\n')
-		fmt.Println(response)
-		newLeaderConn.Close()
+		
+	}
+	
+	fmt.Println("NEW COORD ID:" + strconv.Itoa(min))
+}
+
+
+func (self *Server) terminationProtocol(connMaster net.Conn) {
+	fmt.Println("RUNNING TERMINATION PROTOCOL")
+
+
+	participantChannel := make(chan string)
+
+	for _, otherPort := range self.up_set {
+		go self.msgParticipant(otherPort, "state_req", participantChannel) // vote-req
 	}
 
+	num_uncertain := 0
+	num_responses := 0
+	num_participants := len(self.up_set)
+
+	message := ""
+	//Timeout on 1 second passing
+
+
+	for start := time.Now(); time.Since(start) < time.Second; {
+		if num_responses == num_participants {
+			fmt.Println("All votes gathered!")
+			if num_uncertain == num_responses {
+				message = "abort"
+			}
+			break
+		}
+		select {
+			case response := <-participantChannel:
+				if response == "aborted" {
+					message = "abort"				
+				}else if response == "committed"{
+					message = "commit"
+				}else if response == "uncertain"{
+					num_uncertain += 1
+				}
+				num_responses += 1
+			}
+	}
+
+	fmt.Println(num_responses)
+	if message != ""{
+		for _, otherPort := range self.up_set {
+			go self.msgParticipant(otherPort, message, participantChannel)
+		}
+
+	}else {
+	
+		numUpForAck := len(self.up_set)
+		
+		for _, otherPort := range self.up_set {
+			go self.msgParticipant(otherPort, "precommit\n", participantChannel) // vote-req
+		}
+		 
+		ack_votes := 0
+		//Timeout on 1 second passing
+		for start := time.Now(); time.Since(start) < time.Second; {
+			if ack_votes == numUpForAck {
+				fmt.Println("All precommits acknowledged!")
+				break
+			}
+			select {
+			//Read from participant Channel
+			case response := <-participantChannel:
+				if response == "ack\n" {
+					break
+				} else {
+					ack_votes += 1
+				}
+			}
+		}
+
+		//Send commit to participants	
+		
+		self.write_DTLog("commit")
+
+		for _, otherPort := range self.up_set {
+			go self.msgParticipant(otherPort, "commit\n", participantChannel) // vote-req
+		}
+		message = "commit"
+		fmt.Println("Commit sent!")
+
+
+	}
+
+	retMessage := "ack " + message
+	lenStr := strconv.Itoa(len(retMessage))
+	retMessage = lenStr + "-" + retMessage
+	connMaster.Write([]byte(retMessage))
+
 }
 
-func (self *Server) terminationProtocol() {
-
-}
-
-func (self *Server) recover() {
-
+func (self *Server) recovery(file File*) {
+	fmt.Println("RECOVERING")
 }
 
 //Updates UP set on heartbeat replies
@@ -549,13 +623,16 @@ func (self *Server) heartbeat(connMaster net.Conn, err error) {
 			}
 		}
 		self.up_set = tempAlive
-		fmt.Println("======================================")
-		fmt.Println(tempCoordID)
-		fmt.Println(self.up_set)
 		if tempCoordID != "" {
 			if _, ok := self.up_set[tempCoordID]; !ok {
-				fmt.Println("NOT OK")
+				
 				self.electNewCoord(connMaster, err)
+			}
+		}else{
+			fmt.Println("No one in up set except me")
+			if len(self.up_set) == 1 {
+				self.coordID = self.pid
+				self.is_coord = true
 			}
 		}
 
@@ -609,6 +686,7 @@ func (self *Server) read_DTLog() string {
 		self.write_DTLog("start\n")
 		fmt.Println("New log created for " + self.pid + ".")
 	}
+	self.recovery(file)
 	defer file.Close()
 	log_content, err := ioutil.ReadAll(file)
 	return string(log_content)
