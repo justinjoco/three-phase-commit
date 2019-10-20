@@ -55,21 +55,16 @@ func (self *Server) run() {
 	//Listen on peer facing port
 	go self.receivePeers(lPeer)
 
-	if self.is_coord {
-		self.coordHandleMaster(connMaster, err) //Adding peerFacing port to close if process crashed
-	} else {
-		self.participantHandleMaster(connMaster, err)
-	}
+
+	self.handleMaster(connMaster, err) //Adding peerFacing port to close if process crashed
 
 }
 
 //Coordinator handles master's commands (add, delete, get, crash operations)
 func (self *Server) handleMaster(connMaster net.Conn, err error) {
-	coordMessage := "coordinator " + self.pid
-	coordLenStr := strconv.Itoa(len(coordMessage))
-	connMaster.Write([]byte(coordLenStr + "-" + coordMessage))
+
 	reader := bufio.NewReader(connMaster)
-	fmt.Println("IM THE COORD HANDLING MASTER")
+	fmt.Println("IM HANDLING MASTER")
 	for {
 
 		message, _ := reader.ReadString('\n')
@@ -150,72 +145,6 @@ func (self *Server) handleMaster(connMaster net.Conn, err error) {
 	connMaster.Close()
 }
 
-//Participant handles master's commands (get and crash operations)
-func (self *Server) participantHandleMaster(connMaster net.Conn, err error) {
-	fmt.Println("IAM THE PARTITCIPATN AND IM HANDLING MASTER")
-
-	reader := bufio.NewReader(connMaster)
-	for {
-
-		if err != nil {
-			fmt.Println("Error while accepting connection")
-			fmt.Println(err)
-			// continue
-		}
-		fmt.Println(self.is_coord)
-		if self.is_coord {
-			break
-		}
-
-		message, _ := reader.ReadString('\n')
-
-		message = strings.TrimSuffix(message, "\n")
-		message_slice := strings.Split(message, " ")
-		command := message_slice[0]
-
-		retMessage := ""
-
-		//Using switch so we don't have a lot of if-else statements
-		switch command {
-		case "get":
-			retMessage += "resp "
-			song_name := message_slice[1]
-
-			if song_url, ok := self.playlist[song_name]; ok {
-				retMessage += song_url
-			} else {
-				retMessage += "NONE"
-			}
-
-			lenStr := strconv.Itoa(len(retMessage))
-			retMessage = lenStr + "-" + retMessage
-		case "crash":
-			fmt.Println("Crashing immediately")
-			os.Exit(1)
-
-		//TODO
-		case "crashAfterVote":
-			fmt.Println("Will crash after voting in next 3PC instance")
-			self.crashStage = "after_vote"
-		//TODO
-		case "crashBeforeVote":
-			fmt.Println("Will crash before voting in next 3PC instance")
-			self.crashStage = "before_vote"
-		//TODO
-		case "crashAfterAck":
-			fmt.Println("Will crash after sending ACK in next 3PC instance")
-			self.crashStage = "after_ack"
-		default:
-			retMessage += "Invalid command. This is a participant. Use 'get <songName>'"
-
-		}
-		connMaster.Write([]byte(retMessage))
-
-	}
-	// connMaster.Close()
-	self.coordHandleMaster(connMaster, err)
-
-}
 
 //Coordinator sends and receives messages to and fro the participants (which includes itself)
 func (self *Server) coordHandleParticipants(command string, args []string) bool {
@@ -495,6 +424,8 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 		connCoord.Write([]byte(self.state)) // TODO: update state for each process
 	case "ur_elected":
 		self.is_coord = true
+		self.coordID = self.pid
+	
 	//No valid message given
 	default:
 		connCoord.Write([]byte("Invalid message"))
@@ -559,16 +490,16 @@ func (self *Server) electNewCoord(connMaster net.Conn, err error) {
 			min = int_id
 		}
 	}
-	fmt.Println("+++++++++++++++++++++++++++++++++++++")
-	fmt.Println(self.up_set)
-	fmt.Println(min)
-	fmt.Println("+++++++++++++++++++++++++++++++++++++")
+
 	if strconv.Itoa(min) == self.pid {
 		fmt.Println("I am the coordinator")
 		self.is_coord = true
 		self.coordID = self.pid
 		// just send my pid to master
 		// self.coordHandleMaster(connMaster, err)
+		coordMessage := "coordinator " + self.pid
+		coordLenStr := strconv.Itoa(len(coordMessage))
+		connMaster.Write([]byte(coordLenStr + "-" + coordMessage))
 
 	} else {
 		fmt.Println("Someone else is the coordinator")
