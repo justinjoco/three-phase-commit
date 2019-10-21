@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"reflect"
 )
 
 type Server struct {
@@ -622,7 +623,15 @@ func (self *Server) heartbeat(connMaster net.Conn, err error) {
 				tempCoordID = pid
 			}
 		}
-		self.up_set = tempAlive
+		if !reflect.DeepEqual(tempAlive, self.up_set) {
+			pids := make([]string, 0)
+			for pid, _ := range tempAlive{
+				pids = append(pids, pid)
+			}
+			self.write_DTLog("up " + strings.Join(pids, " "))
+			self.up_set = tempAlive
+		}
+		
 		if tempCoordID != "" {
 			if _, ok := self.up_set[tempCoordID]; !ok {
 				
@@ -685,8 +694,10 @@ func (self *Server) read_DTLog() string {
 		// file doesnt exist yet, create one
 		self.write_DTLog("start\n")
 		fmt.Println("New log created for " + self.pid + ".")
+	}else{
+		self.recovery(file)
 	}
-	self.recovery(file)
+	
 	defer file.Close()
 	log_content, err := ioutil.ReadAll(file)
 	return string(log_content)
