@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"strconv"
+	"container/list"
 	//"fmt"
 )
 
@@ -26,7 +27,7 @@ func main() {
 	}
 
 	server = Server{pid: serverId, peers: peers, masterFacingPort: masterFacingPort,
-			peerFacingPort: peerFacingPort, is_coord: false, playlist: make(map[string]string), crashStage: ""}
+			peerFacingPort: peerFacingPort, commandQ: list.New(), is_coord: false, playlist: make(map[string]string), crashStage: ""}
 	
 	server.run()
 
