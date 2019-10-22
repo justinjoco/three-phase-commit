@@ -3,7 +3,7 @@ package main
 import (
 	"bufio"
 	"container/list"
-	"encoding/json"
+//	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -19,9 +19,9 @@ type Server struct {
 	peers            []string
 	masterFacingPort string
 	peerFacingPort   string
-	up_set           map[string]string //maps a process's pid to its portfacing number
+	upSet            map[string]string //maps a process's pid to its portfacing number
 	playlist         map[string]string //dictionary of <song_name, song_URL>
-	is_coord         bool
+	isCoord          bool
 	state            string            //Saves the current state of process: TODO
 	songQuery        map[string]string //map containing the song's name and URL for deletion or adding
 	commandQ         *list.List        //Saved add or delete command
@@ -29,10 +29,11 @@ type Server struct {
 	// "vote_req"||"partial_precommit"||"partial_commit"
 	sentTo []string //A list of processes that the coordinator has sent command to before crash
 	//If it's a participant, this will be an empty list all the time
-	waitingFor    string // "precommit"||"abort"||"commit"
-	coordID       string // Each process will keep track of the id of the current coord
-	crash_up_set  []string
-	recovery_mode bool // True if the process just recovered and DT log exists
+	waitingFor       string // "precommit"||"abort"||"commit"
+	coordID          string // Each process will keep track of the id of the current coord
+	crashUpSet       []string
+	recoveryMode     bool // True if the process just recovered and DT log exists
+	requestTs		 int   
 }
 
 const (
@@ -43,7 +44,7 @@ const (
 //Start a server
 func (self *Server) run() {
 
-	self.read_DTLog()
+	self.ReadDTLog()
 	lMaster, error := net.Listen(CONNECT_TYPE, CONNECT_HOST+":"+self.masterFacingPort)
 	lPeer, error := net.Listen(CONNECT_TYPE, CONNECT_HOST+":"+self.peerFacingPort)
 
@@ -54,17 +55,17 @@ func (self *Server) run() {
 	defer lMaster.Close()
 	connMaster, err := lMaster.Accept()
 	//Update UP set on each heartbeat iteration
-	go self.heartbeat(connMaster, err)
+	go self.Heartbeat(connMaster, err)
 
 	//Listen on peer facing port
-	go self.receivePeers(lPeer)
+	go self.ReceivePeers(lPeer)
 
-	self.handleMaster(connMaster, err) //Adding peerFacing port to close if process crashed
+	self.HandleMaster(connMaster, err) //Adding peerFacing port to close if process crashed
 
 }
 
 //Coordinator handles master's commands (add, delete, get, crash operations)
-func (self *Server) handleMaster(connMaster net.Conn, err error) {
+func (self *Server) HandleMaster(connMaster net.Conn, err error) {
 
 	reader := bufio.NewReader(connMaster)
 	fmt.Println("IM HANDLING MASTER")
@@ -73,9 +74,9 @@ func (self *Server) handleMaster(connMaster net.Conn, err error) {
 		message, _ := reader.ReadString('\n')
 
 		message = strings.TrimSuffix(message, "\n")
-		message_slice := strings.Split(message, " ")
-		command := message_slice[0]
-		args := message_slice[1:]
+		messageSlice := strings.Split(message, " ")
+		command := messageSlice[0]
+		args := messageSlice[1:]
 
 		retMessage := ""
 		// fmt.Println(message)
@@ -84,9 +85,10 @@ func (self *Server) handleMaster(connMaster net.Conn, err error) {
 		//Start 3PC instance
 		case "add", "delete":
 			retMessage += "ack "
-			self.write_DTLog(message)
-			commit_abort := self.coordHandleParticipants(command, args)
-			if commit_abort {
+			self.WriteDTLog(message)
+			self.requestTs+=1
+			commitAbort := self.CoordHandleParticipants(command, args)
+			if commitAbort {
 				retMessage += "commit"
 			} else {
 				retMessage += "abort"
@@ -96,12 +98,12 @@ func (self *Server) handleMaster(connMaster net.Conn, err error) {
 		//Returns songURL if songName is in playlist
 		case "get":
 			retMessage += "resp "
-			song_name := args[0]
-			song_url := self.playlist[song_name]
-			if song_url == "" {
+			songName := args[0]
+			songURL := self.playlist[songName]
+			if songURL == "" {
 				retMessage += "NONE"
 			} else {
-				retMessage += song_url
+				retMessage += songURL
 			}
 
 			lenStr := strconv.Itoa(len(retMessage))
@@ -113,31 +115,31 @@ func (self *Server) handleMaster(connMaster net.Conn, err error) {
 		//TODO
 		case "crashVoteREQ":
 			fmt.Println("Crashing after sending vote req to ... ")
-			self.crashStage = "vote_req"
+			self.crashStage = "vote-req"
 			self.sentTo = args
 			fmt.Println(args)
 		//TODO
 		case "crashPartialPreCommit":
 			fmt.Println("Crashing after sending precommit to ... ")
-			self.crashStage = "partial_precommit"
+			self.crashStage = "partial-precommit"
 			self.sentTo = args
 		//TODO
 		case "crashPartialCommit":
 			fmt.Println("Crashing after sending commit to ...")
-			self.crashStage = "partial_commit"
+			self.crashStage = "partial-commit"
 			self.sentTo = args
 			//TODO
 		case "crashAfterVote":
 			fmt.Println("Will crash after voting in next 3PC instance")
-			self.crashStage = "after_vote"
+			self.crashStage = "after-vote"
 		//TODO
 		case "crashBeforeVote":
 			fmt.Println("Will crash before voting in next 3PC instance")
-			self.crashStage = "before_vote"
+			self.crashStage = "before-vote"
 		//TODO
 		case "crashAfterAck":
 			fmt.Println("Will crash after sending ACK in next 3PC instance")
-			self.crashStage = "after_ack"
+			self.crashStage = "after-ack"
 		default:
 			retMessage += "Invalid command. This is the coordinator use 'add <songName> <songURL>', 'get <songName>', or 'delete <songName>'"
 
@@ -150,11 +152,11 @@ func (self *Server) handleMaster(connMaster net.Conn, err error) {
 }
 
 //Coordinator sends and receives messages to and fro the participants (which includes itself)
-func (self *Server) coordHandleParticipants(command string, args []string) bool {
+func (self *Server) CoordHandleParticipants(command string, args []string) bool {
 	//ADD or DELETE request: sending + receiving
 	songName := ""
 	songURL := ""
-	numUpForVote := len(self.up_set)
+	numUpForVote := len(self.upSet)
 	retBool := false
 	participantChannel := make(chan string)
 
@@ -166,9 +168,9 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 		songName = args[0]
 		songURL = args[1]
 		message := command + " " + songName + " " + songURL
-		if self.crashStage != "vote_req" {
-			for _, otherPort := range self.up_set {
-				go self.msgParticipant(otherPort, message, participantChannel) // vote-req
+		if self.crashStage != "vote-req" {
+			for _, otherPort := range self.upSet {
+				go self.MsgParticipant(otherPort, message, participantChannel) // vote-req
 			}
 		} else {
 			if len(self.sentTo) == 0 {
@@ -177,7 +179,7 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 			}
 			for _, otherID := range self.sentTo {
 				fmt.Println("stsarting iteration going through the sentTo list")
-				if otherPort, ok := self.up_set[otherID]; ok {
+				if otherPort, ok := self.upSet[otherID]; ok {
 					peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
 					if err != nil {
 						fmt.Println(err)
@@ -193,16 +195,16 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 	case "delete":
 		songName = args[0]
 		message := command + " " + songName
-		if self.crashStage != "vote_req" {
-			for _, otherPort := range self.up_set {
-				go self.msgParticipant(otherPort, message, participantChannel) // vote-req
+		if self.crashStage != "vote-req" {
+			for _, otherPort := range self.upSet {
+				go self.MsgParticipant(otherPort, message, participantChannel) // vote-req
 			}
 		} else {
 			if len(self.sentTo) == 0 {
 				os.Exit(1)
 			}
 			for _, otherID := range self.sentTo {
-				if otherPort, ok := self.up_set[otherID]; ok {
+				if otherPort, ok := self.upSet[otherID]; ok {
 					peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
 					if err != nil {
 						fmt.Println(err)
@@ -217,25 +219,25 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 		fmt.Println("Invalid command")
 	}
 	//VOTE-REQ
-	yes_votes := 0
-	num_voted := 0
-	vote_success := false
+	yesVotes := 0
+	numVoted := 0
+	voteSuccess := false
 
 	//Timeout on 1 second passing
 	for start := time.Now(); time.Since(start) < time.Second; {
-		if num_voted == numUpForVote {
+		if numVoted == numUpForVote {
 			fmt.Println("All votes gathered!")
-			if yes_votes == num_voted {
-				vote_success = true
+			if yesVotes == numVoted {
+				voteSuccess = true
 			}
 			break
 		}
 		select {
 		case response := <-participantChannel:
 			if response == "yes" {
-				yes_votes += 1
+				yesVotes += 1
 			}
-			num_voted += 1
+			numVoted += 1
 		}
 	}
 
@@ -243,20 +245,20 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 	// if timeout, send ABORT to everyone
 
 	//Precommit Send + Receiving
-	if vote_success {
+	if voteSuccess {
 
-		numUpForAck := len(self.up_set)
+		numUpForAck := len(self.upSet)
 
-		if self.crashStage != "partial_precommit" {
-			for _, otherPort := range self.up_set {
-				go self.msgParticipant(otherPort, "precommit\n", participantChannel) // vote-req
+		if self.crashStage != "partial-precommit" {
+			for _, otherPort := range self.upSet {
+				go self.MsgParticipant(otherPort, "precommit\n", participantChannel) // vote-req
 			}
 		} else {
 			if len(self.sentTo) == 0 {
 				os.Exit(1)
 			}
 			for _, otherID := range self.sentTo {
-				if otherPort, ok := self.up_set[otherID]; ok {
+				if otherPort, ok := self.upSet[otherID]; ok {
 					peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
 					if err != nil {
 						fmt.Println(err)
@@ -267,11 +269,11 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 			os.Exit(1)
 		}
 
-		ack_votes := 0
+		ackVotes := 0
 
 		//Timeout on 1 second passing
 		for start := time.Now(); time.Since(start) < time.Second; {
-			if ack_votes == numUpForAck {
+			if ackVotes == numUpForAck {
 				fmt.Println("All precommits acknowledged!")
 				break
 			}
@@ -281,24 +283,24 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 				if response == "ack\n" {
 					break
 				} else {
-					ack_votes += 1
+					ackVotes += 1
 				}
 			}
 		}
 
 		//Send commit to participants
 		retBool = true
-		self.write_DTLog("commit")
-		if self.crashStage != "partial_commit" {
-			for _, otherPort := range self.up_set {
-				go self.msgParticipant(otherPort, "commit\n", participantChannel) // vote-req
+		self.WriteDTLog("commit")
+		if self.crashStage != "partial-commit" {
+			for _, otherPort := range self.upSet {
+				go self.MsgParticipant(otherPort, "commit\n", participantChannel) // vote-req
 			}
 		} else {
 			if len(self.sentTo) == 0 {
 				os.Exit(1)
 			}
 			for _, otherID := range self.sentTo {
-				if otherPort, ok := self.up_set[otherID]; ok {
+				if otherPort, ok := self.upSet[otherID]; ok {
 					peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
 					if err != nil {
 						fmt.Println(err)
@@ -313,9 +315,9 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 
 	} else {
 		//Send abort to participants
-		self.write_DTLog("abort")
-		for _, otherPort := range self.up_set {
-			go self.msgParticipant(otherPort, "abort\n", participantChannel)
+		self.WriteDTLog("abort")
+		for _, otherPort := range self.upSet {
+			go self.MsgParticipant(otherPort, "abort\n", participantChannel)
 		}
 	}
 
@@ -323,10 +325,10 @@ func (self *Server) coordHandleParticipants(command string, args []string) bool 
 }
 
 //Participant handles coordinator's message depending on message content
-func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
+func (self *Server) ParticipantHandleCoord(message string, connCoord net.Conn) {
 	//Receiving add/delete + sending YES/NO
-	message_slice := strings.Split(message, " ")
-	command := message_slice[0]
+	messageSlice := strings.Split(message, " ")
+	command := messageSlice[0]
 
 	command = strings.Trim(command, "\n")
 
@@ -335,12 +337,13 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 	//Sends no to coord if songUrl is bigger than self.pid + 5; yes otherwise -> records vote in DT log
 	case "add":
 		self.state = "aborted"
-		songName := message_slice[1]
-		songURL := message_slice[2]
-		if !self.is_coord {
-			self.write_DTLog(message)
+		songName := messageSlice[1]
+		songURL := messageSlice[2]
+		if !self.isCoord {
+			self.requestTs+=1
+			self.WriteDTLog(message)
 		}
-		if self.crashStage == "before_vote" {
+		if self.crashStage == "before-vote" {
 			os.Exit(1)
 		}
 		songQuery := map[string]string{
@@ -357,23 +360,24 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 			connCoord.Write([]byte("yes")) // sending back to the coordinator, now need to wait for precommit
 			self.waitingFor = "precommit"
 			self.state = "uncertain"
-			if !self.is_coord {
-				self.write_DTLog("yes")
+			if !self.isCoord {
+				self.WriteDTLog("yes")
 			}
 		}
-		if self.crashStage == "after_vote" {
+		if self.crashStage == "after-vote" {
 			os.Exit(1)
 		}
 	//Always send yes to coord and records vote in DT log
 	case "delete":
 		self.state = "aborted"
-		if !self.is_coord {
-			self.write_DTLog(message)
+		if !self.isCoord {
+			self.requestTs+=1
+			self.WriteDTLog(message)
 		} // record message before crashing
-		if self.crashStage == "before_vote" {
+		if self.crashStage == "before-vote" {
 			os.Exit(1)
 		}
-		songName := message_slice[1]
+		songName := messageSlice[1]
 		self.commandQ.PushBack("delete")
 		songQuery := map[string]string{
 			"songName": songName,
@@ -384,10 +388,10 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 		connCoord.Write([]byte("yes"))
 		self.waitingFor = "precommit"
 		self.state = "uncertain"
-		if !self.is_coord {
-			self.write_DTLog("yes")
+		if !self.isCoord {
+			self.WriteDTLog("yes")
 		}
-		if self.crashStage == "after_vote" {
+		if self.crashStage == "after-vote" {
 			os.Exit(1)
 		}
 
@@ -397,7 +401,7 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 			connCoord.Write([]byte("ack"))
 			self.waitingFor = "commit"
 			self.state = "committable"
-			if self.crashStage == "after_ack" {
+			if self.crashStage == "after-ack" {
 				os.Exit(1)
 			}
 		}
@@ -414,24 +418,29 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 			self.commandQ.Remove(request)
 			self.waitingFor = ""
 			self.state = "committed"
-			if !self.is_coord {
-				self.write_DTLog("commit")
+			if !self.isCoord {
+				self.WriteDTLog("commit")
 			}
 		}
 	//Aborts 3PC on abort receipt
 	case "abort":
 		fmt.Println("ABORTING")
 		if self.state != "aborted" {
-			if !self.is_coord {
-				self.write_DTLog("abort")
+			if !self.isCoord {
+				self.WriteDTLog("abort")
 			}
 			self.state = "aborted"
 			self.waitingFor = ""
 		}
-	case "state_req":
+	case "state-req":
+		requestTs, _ := strconv.Atoi(messageSlice[1])
+		if requestTs > self.requestTs {
+			self.state = "aborted"
+			self.requestTs = requestTs
+		}
 		connCoord.Write([]byte(self.state)) // TODO: update state for each process
-	case "ur_elected":
-		self.is_coord = true
+	case "ur-elected":
+		self.isCoord = true
 		self.coordID = self.pid
 
 	//No valid message given
@@ -442,7 +451,7 @@ func (self *Server) participantHandleCoord(message string, connCoord net.Conn) {
 }
 
 //Listens on peer facing port; handles heartbeat-oriented messages and those that aren't
-func (self *Server) receivePeers(lPeer net.Listener) {
+func (self *Server) ReceivePeers(lPeer net.Listener) {
 	defer lPeer.Close()
 
 	for {
@@ -459,12 +468,13 @@ func (self *Server) receivePeers(lPeer net.Listener) {
 		message := string(recvBuf[:n])
 		message = strings.TrimSuffix(message, "\n")
 		if message != "ping" {
-			self.participantHandleCoord(message, connPeer)
+			self.ParticipantHandleCoord(message, connPeer)
 		} else if message == "playlist" {
+			/*
 			plJSON, _ := json.Marshal(self.playlist)
-			connPeer.Write(plJSON)
+			connPeer.Write(plJSON)*/
 		} else {
-			if self.is_coord {
+			if self.isCoord {
 				connPeer.Write([]byte(self.pid + " +"))
 			} else {
 				connPeer.Write([]byte(self.pid + " -"))
@@ -476,27 +486,27 @@ func (self *Server) receivePeers(lPeer net.Listener) {
 
 }
 
-func (self *Server) electNewCoord(connMaster net.Conn, err error) {
+func (self *Server) ElectNewCoord(connMaster net.Conn, err error) {
 	fmt.Println("RUNNING ELECTION")
 	min := 1000000
-	for id, _ := range self.up_set {
-		int_id, _ := strconv.Atoi(id)
-		if int_id < min {
-			min = int_id
+	for id, _ := range self.upSet {
+		intId, _ := strconv.Atoi(id)
+		if intId < min {
+			min = intId
 		}
 	}
 
 	fmt.Println("ELECTING NEW COORD")
 	if strconv.Itoa(min) == self.pid {
 		fmt.Println("I am the coordinator")
-		self.is_coord = true
+		self.isCoord = true
 		self.coordID = self.pid
 		// just send my pid to master
 		// self.coordHandleMaster(connMaster, err)
 		coordMessage := "coordinator " + self.pid
 		coordLenStr := strconv.Itoa(len(coordMessage))
 		connMaster.Write([]byte(coordLenStr + "-" + coordMessage))
-		self.terminationProtocol(connMaster)
+		self.TerminationProtocol(connMaster)
 
 	} else {
 		fmt.Println("Someone else is the coordinator")
@@ -506,61 +516,62 @@ func (self *Server) electNewCoord(connMaster net.Conn, err error) {
 	fmt.Println("NEW COORD ID:" + strconv.Itoa(min))
 }
 
-func (self *Server) terminationProtocol(connMaster net.Conn) {
+func (self *Server) TerminationProtocol(connMaster net.Conn) {
 	fmt.Println("RUNNING TERMINATION PROTOCOL")
 
 	participantChannel := make(chan string)
 
-	for _, otherPort := range self.up_set {
-		go self.msgParticipant(otherPort, "state_req", participantChannel) // vote-req
+	for _, otherPort := range self.upSet {
+		go self.MsgParticipant(otherPort, "state-req " +  strconv.Itoa(self.requestTs), participantChannel) // vote-req
 	}
 
-	num_uncertain := 0
-	num_responses := 0
-	num_participants := len(self.up_set)
+	numUncertain := 0
+	numResponses := 0
+	numParticipants := len(self.upSet)
 
 	message := ""
 	//Timeout on 1 second passing
 
 	for start := time.Now(); time.Since(start) < time.Second; {
-		if num_responses == num_participants {
+		if numResponses == numParticipants {
 			fmt.Println("All votes gathered!")
-			if num_uncertain == num_responses {
+			if numUncertain == numResponses {
 				message = "abort"
 			}
 			break
 		}
 		select {
 		case response := <-participantChannel:
+			fmt.Println("response")
 			if response == "aborted" {
 				message = "abort"
 			} else if response == "committed" {
 				message = "commit"
 			} else if response == "uncertain" {
-				num_uncertain += 1
+				numUncertain += 1
 			}
-			num_responses += 1
+			numResponses += 1
 		}
 	}
 
-	fmt.Println(num_responses)
+	fmt.Println(numResponses)
 	if message != "" {
-		for _, otherPort := range self.up_set {
-			go self.msgParticipant(otherPort, message, participantChannel)
+		for _, otherPort := range self.upSet {
+			go self.MsgParticipant(otherPort, message, participantChannel)
 		}
 
 	} else {
 
-		numUpForAck := len(self.up_set)
+		numUpForAck := len(self.upSet)
 
-		for _, otherPort := range self.up_set {
-			go self.msgParticipant(otherPort, "precommit\n", participantChannel) // vote-req
+		for _, otherPort := range self.upSet {
+			go self.MsgParticipant(otherPort, "precommit\n", participantChannel) // vote-req
 		}
 
-		ack_votes := 0
+		ackVotes := 0
 		//Timeout on 1 second passing
 		for start := time.Now(); time.Since(start) < time.Second; {
-			if ack_votes == numUpForAck {
+			if ackVotes == numUpForAck {
 				fmt.Println("All precommits acknowledged!")
 				break
 			}
@@ -570,17 +581,17 @@ func (self *Server) terminationProtocol(connMaster net.Conn) {
 				if response == "ack\n" {
 					break
 				} else {
-					ack_votes += 1
+					ackVotes += 1
 				}
 			}
 		}
 
 		//Send commit to participants
 
-		self.write_DTLog("commit")
+		self.WriteDTLog("commit")
 
-		for _, otherPort := range self.up_set {
-			go self.msgParticipant(otherPort, "commit\n", participantChannel) // vote-req
+		for _, otherPort := range self.upSet {
+			go self.MsgParticipant(otherPort, "commit\n", participantChannel) // vote-req
 		}
 		message = "commit"
 		fmt.Println("Commit sent!")
@@ -594,31 +605,33 @@ func (self *Server) terminationProtocol(connMaster net.Conn) {
 
 }
 
-func (self *Server) recovery(file *os.File) {
+func (self *Server) Recovery(file *os.File) {
 	fmt.Println(self.pid + " RECOVERING")
 
 	scanner := bufio.NewScanner(file)
-	latest_command := ""
+	latestCommand := ""
 	songQuery := make(map[string]string)
 	for scanner.Scan() {
 		line := scanner.Text()
-		line_slice := strings.Split(line, " ")
-		if line_slice[0] == "up" {
-			self.crash_up_set = line_slice[1:]
-		} else if line_slice[0] == "add" {
-			latest_command = "add"
-			songQuery["songName"] = line_slice[1]
-			songQuery["songURL"] = line_slice[2]
-		} else if line_slice[0] == "delete" {
-			latest_command = "delete"
-			songQuery["songName"] = line_slice[1]
-		} else if line_slice[0] == "commit" {
-			if latest_command == "add" {
+		lineSlice := strings.Split(line, " ")
+		if lineSlice[0] == "up" {
+			self.crashUpSet = lineSlice[1:]
+		} else if lineSlice[0] == "add" {
+			self.requestTs+=1
+			latestCommand = "add"
+			songQuery["songName"] = lineSlice[1]
+			songQuery["songURL"] = lineSlice[2]
+		} else if lineSlice[0] == "delete" {
+			self.requestTs+=1
+			latestCommand = "delete"
+			songQuery["songName"] = lineSlice[1]
+		} else if lineSlice[0] == "commit" {
+			if latestCommand == "add" {
 				self.playlist[songQuery["songName"]] = songQuery["songURL"]
 			} else {
 				delete(self.playlist, songQuery["songName"])
 			}
-		} else if line_slice[0] == "abort" {
+		} else if lineSlice[0] == "abort" {
 			songQuery["songName"] = ""
 			songQuery["songURL"] = ""
 		}
@@ -627,7 +640,7 @@ func (self *Server) recovery(file *os.File) {
 }
 
 //Updates UP set on heartbeat replies
-func (self *Server) heartbeat(connMaster net.Conn, err error) {
+func (self *Server) Heartbeat(connMaster net.Conn, err error) {
 
 	for {
 
@@ -642,41 +655,45 @@ func (self *Server) heartbeat(connMaster net.Conn, err error) {
 
 			fmt.Fprintf(peerConn, "ping"+"\n")
 			response, _ := bufio.NewReader(peerConn).ReadString('\n')
-			response_slice := strings.Split(response, " ")
-			pid := response_slice[0]
-			coord_bool := response_slice[1]
+			responseSlice := strings.Split(response, " ")
+			pid := responseSlice[0]
+			coordBool := responseSlice[1]
 			tempAlive[pid] = otherPort
-			if coord_bool == "+" {
+			if coordBool == "+"{
 				tempCoordID = pid
 			}
 		}
-		if !reflect.DeepEqual(tempAlive, self.up_set) {
+		if !reflect.DeepEqual(tempAlive, self.upSet) {
 			pids := make([]string, 0)
 			for pid, _ := range tempAlive {
 				pids = append(pids, pid)
 			}
-			self.write_DTLog("up " + strings.Join(pids, " "))
-			self.up_set = tempAlive
+			self.WriteDTLog("up " + strings.Join(pids, " "))
+			self.upSet = tempAlive
 		}
 
 		if tempCoordID != "" {
-			if _, ok := self.up_set[tempCoordID]; !ok {
+			if _, ok := self.upSet[tempCoordID]; !ok {
 
-				self.electNewCoord(connMaster, err)
+				self.ElectNewCoord(connMaster, err)
 			}
 		} else {
 			fmt.Println("No one in up set except me")
 
 			self.coordID = self.pid
-			self.is_coord = true
+			self.isCoord = true
 			coordMessage := "coordinator " + self.pid
 			coordLenStr := strconv.Itoa(len(coordMessage))
 			connMaster.Write([]byte(coordLenStr + "-" + coordMessage))
 
 		}
+		if self.coordID != tempCoordID {
+			self.coordID = tempCoordID
+		}
 
-		self.coordID = tempCoordID
+		
 		// if just recovered, get the playlist from coord
+		/*
 		if self.recovery_mode && !self.is_coord {
 			coordConn, err := net.Dial("tcp", "127.0.0.1:"+self.up_set[self.coordID])
 			if err != nil {
@@ -685,7 +702,7 @@ func (self *Server) heartbeat(connMaster net.Conn, err error) {
 			fmt.Fprintf(coordConn, "playlist"+"\n")
 			response, _ := bufio.NewReader(coordConn).ReadString('\n')
 			PL := json.Unmarshal(response)
-		}
+		}*/
 		time.Sleep(1000 * time.Millisecond)
 
 	}
@@ -693,7 +710,7 @@ func (self *Server) heartbeat(connMaster net.Conn, err error) {
 }
 
 //Message a particpant with given otherPort; records participant's response in Go channel
-func (self *Server) msgParticipant(otherPort string, message string, channel chan string) {
+func (self *Server) MsgParticipant(otherPort string, message string, channel chan string) {
 
 	peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
 	if err != nil {
@@ -710,7 +727,7 @@ func (self *Server) msgParticipant(otherPort string, message string, channel cha
 }
 
 //Writes new DT log if it doesn't exist; appends line to DT log, otherwise
-func (self *Server) write_DTLog(line string) {
+func (self *Server) WriteDTLog(line string) {
 	/*
 		All lines in log will be lower case. The first line is always "start"
 	*/
@@ -718,25 +735,25 @@ func (self *Server) write_DTLog(line string) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		os.Mkdir(path, 0700) //creates the directory if not exist
 	}
-	file_name := self.pid + "_DTLog.txt"
-	file_path := filepath.Join(path, file_name)
-	f, _ := os.OpenFile(file_path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	fileName := "DTLog" + self.pid + ".txt"
+	filePath := filepath.Join(path, fileName)
+	f, _ := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	f.Write([]byte(line + "\n"))
 	f.Close()
 }
 
 //Reads DT log; writes a new one if it doesn't exist
-func (self *Server) read_DTLog() {
-	file_name := self.pid + "_DTLog.txt"
-	file_path := filepath.Join("./logs", file_name)
-	file, err := os.Open(file_path)
+func (self *Server) ReadDTLog() {
+	fileName := "DTLog" + self.pid + ".txt"
+	filePath := filepath.Join("./logs", fileName)
+	file, err := os.Open(filePath)
 	if err != nil {
 		// file doesnt exist yet, create one
-		self.write_DTLog("start\n")
+		self.WriteDTLog("start\n")
 		fmt.Println("New log created for " + self.pid + ".")
 	} else {
-		self.recovery_mode = true
-		self.recovery(file)
+		self.recoveryMode = true
+		self.Recovery(file)
 	}
 
 	defer file.Close()

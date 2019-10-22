@@ -27,8 +27,8 @@ func main() {
 	}
 
 	server = Server{pid: serverId, peers: peers, masterFacingPort: masterFacingPort,
-		peerFacingPort: peerFacingPort, commandQ: list.New(), is_coord: false,
-		playlist: make(map[string]string), crashStage: "", recovery_mode: false}
+		peerFacingPort: peerFacingPort, commandQ: list.New(), isCoord: false,
+		playlist: make(map[string]string), crashStage: "", recoveryMode: false, requestTs: 0}
 
 	server.run()
 
