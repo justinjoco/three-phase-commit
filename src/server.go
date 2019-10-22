@@ -91,8 +91,8 @@ func (self *Server) HandleMaster(connMaster net.Conn, err error) {
 				retMessage += "ack "
 				self.WriteDTLog(message)
 				self.requestTs+=1
-				commitAbort := self.CoordHandleParticipants(command, args)
-				if commitAbort {
+				commitBool := self.CoordHandleParticipants(command, args)
+				if commitBool {
 					retMessage += "commit"
 				} else {
 					retMessage += "abort"
@@ -164,7 +164,7 @@ func (self *Server) CoordHandleParticipants(command string, args []string) bool 
 	songName := ""
 	songURL := ""
 	numUpForVote := len(self.upSet)
-	retBool := false
+	commitBool := false
 	participantChannel := make(chan string)
 
 	// broadcast "start" to all participants, after p receives start, it knows to wait for vote_req
@@ -228,17 +228,9 @@ func (self *Server) CoordHandleParticipants(command string, args []string) bool 
 	//VOTE-REQ
 	yesVotes := 0
 	numVoted := 0
-	voteSuccess := false
 
 	//Timeout on 1 second passing
-	for start := time.Now(); time.Since(start) < time.Second; {
-		if numVoted == numUpForVote {
-			fmt.Println("All votes gathered!")
-			if yesVotes == numVoted {
-				voteSuccess = true
-			}
-			break
-		}
+	for numVoted < numUpForVote {
 		select {
 		case response := <-participantChannel:
 			if response == "yes" {
@@ -247,6 +239,11 @@ func (self *Server) CoordHandleParticipants(command string, args []string) bool 
 			numVoted += 1
 		}
 	}
+
+	fmt.Println("All votes gathered!")
+	
+	voteSuccess := (yesVotes == numVoted)
+	
 
 	//Time has past or got votes from everyone
 	// if timeout, send ABORT to everyone
@@ -276,27 +273,17 @@ func (self *Server) CoordHandleParticipants(command string, args []string) bool 
 			os.Exit(1)
 		}
 
-		ackVotes := 0
-
-		//Timeout on 1 second passing
-		for start := time.Now(); time.Since(start) < time.Second; {
-			if ackVotes == numUpForAck {
-				fmt.Println("All precommits acknowledged!")
-				break
-			}
+		counter := 0
+		for counter < numUpForAck {
 			select {
 			//Read from participant Channel
-			case response := <-participantChannel:
-				if response == "ack\n" {
-					break
-				} else {
-					ackVotes += 1
-				}
+				case <-participantChannel:
+					counter+=1
 			}
 		}
 
 		//Send commit to participants
-		retBool = true
+		commitBool = true
 		self.WriteDTLog("commit")
 		if self.crashStage != "partial-commit" {
 			for _, otherPort := range self.upSet {
@@ -328,7 +315,7 @@ func (self *Server) CoordHandleParticipants(command string, args []string) bool 
 		}
 	}
 
-	return retBool
+	return commitBool
 }
 
 //Participant handles coordinator's message depending on message content
@@ -550,14 +537,7 @@ func (self *Server) TerminationProtocol(connMaster net.Conn) {
 	message := ""
 	//Timeout on 1 second passing
 
-	for start := time.Now(); time.Since(start) < time.Second; {
-		if numResponses == numParticipants {
-			fmt.Println("All votes gathered!")
-			if numUncertain == numResponses {
-				message = "abort"
-			}
-			break
-		}
+	for numResponses < numParticipants {
 		select {
 		case response := <-participantChannel:
 			fmt.Println("response")
@@ -570,6 +550,11 @@ func (self *Server) TerminationProtocol(connMaster net.Conn) {
 			}
 			numResponses += 1
 		}
+	}
+
+	fmt.Println("All votes gathered!")
+	if numUncertain == numResponses {
+		message = "abort"
 	}
 
 	fmt.Println(numResponses)
@@ -586,23 +571,16 @@ func (self *Server) TerminationProtocol(connMaster net.Conn) {
 			go self.MsgParticipant(otherPort, "precommit\n", participantChannel) // vote-req
 		}
 
-		ackVotes := 0
+		counter := 0
 		//Timeout on 1 second passing
-		for start := time.Now(); time.Since(start) < time.Second; {
-			if ackVotes == numUpForAck {
-				fmt.Println("All precommits acknowledged!")
-				break
-			}
+		for counter < numUpForAck {
 			select {
 			//Read from participant Channel
-			case response := <-participantChannel:
-				if response == "ack\n" {
-					break
-				} else {
-					ackVotes += 1
-				}
+				case <-participantChannel:
+					counter+=1
 			}
 		}
+		fmt.Println("All precommits sent!")
 
 		//Send commit to participants
 
