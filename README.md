@@ -5,11 +5,11 @@ Slip days used(this project): 2
 
 Slip days used(total):
 
-* Dilip (dr589): 2
+* Dilip (dr589): 3
 
 * Justin (jaj263): 2
 
-* Zhilong Li (zl252): 3
+* Zhilong Li (zl252): 2
 
 ### Automated testing 
 Within the root directory of this project directory, run your test script with a master process here.

@@ -751,7 +751,6 @@ func (self *Server) Heartbeat(connMaster net.Conn, err error) {
 
 		if tempCoordID != "" {
 			if _, ok := self.upSet[tempCoordID]; !ok {
-
 				self.ElectNewCoord(connMaster, err)
 			}
 		} else {
@@ -788,7 +787,6 @@ func (self *Server) MsgParticipant(otherPort string, message string, channel cha
 	fmt.Fprintf(peerConn, message+"\n")
 	response, _ := bufio.NewReader(peerConn).ReadString('\n')
 
-	fmt.Println(response)
 	channel <- response
 
 	peerConn.Close()
@@ -815,8 +813,8 @@ func (self *Server) ReadDTLog() {
 	fileName := "DTLog" + self.pid + ".txt"
 	filePath := filepath.Join("./logs", fileName)
 	file, err := os.Open(filePath)
+	// file doesnt exist yet, create one
 	if err != nil {
-		// file doesnt exist yet, create one
 		self.WriteDTLog("start\n")
 		fmt.Println("New log created for " + self.pid + ".")
 	} else {
