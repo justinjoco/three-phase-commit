@@ -30,7 +30,7 @@ func main() {
 		peerFacingPort: peerFacingPort, commandQ: list.New(), isCoord: false,
 		playlist: make(map[string]string), crashStage: "", recoveryMode: false, requestTs: 0}
 
-	server.run()
+	server.Run()
 
 	os.Exit(0)
 

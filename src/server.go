@@ -28,12 +28,14 @@ type Server struct {
 	crashStage       string            //Initialized to "", could be "after_vote"||"before_vote"||"after_ack"||
 	// "vote_req"||"partial_precommit"||"partial_commit"
 	sentTo []string //A list of processes that the coordinator has sent command to before crash
-	//If it's a participant, this will be an empty list all the time
-	waitingFor       string // "precommit"||"abort"||"commit"
 	coordID          string // Each process will keep track of the id of the current coord
 	crashUpSet       []string
+	waitingFor		 string
 	recoveryMode     bool // True if the process just recovered and DT log exists
-	requestTs		 int   
+	savedCommand	 string
+	requestTs		 int
+	foundLPF		 bool
+
 }
 
 const (
@@ -42,7 +44,7 @@ const (
 )
 
 //Start a server
-func (self *Server) run() {
+func (self *Server) Run() {
 
 	self.ReadDTLog()
 	lMaster, error := net.Listen(CONNECT_TYPE, CONNECT_HOST+":"+self.masterFacingPort)
@@ -80,68 +82,75 @@ func (self *Server) HandleMaster(connMaster net.Conn, err error) {
 
 		retMessage := ""
 		// fmt.Println(message)
+		if self.recoveryMode {
+			if len(self.crashUpSet) >= 2{
+				self.WaitForLPF()
+			}
+			self.recoveryMode = false
+		}
 
-		switch command {
 		//Start 3PC instance
-		case "add", "delete":
-			retMessage += "ack "
-			self.WriteDTLog(message)
-			self.requestTs+=1
-			commitAbort := self.CoordHandleParticipants(command, args)
-			if commitAbort {
-				retMessage += "commit"
-			} else {
-				retMessage += "abort"
-			}
-			lenStr := strconv.Itoa(len(retMessage))
-			retMessage = lenStr + "-" + retMessage
-		//Returns songURL if songName is in playlist
-		case "get":
-			retMessage += "resp "
-			songName := args[0]
-			songURL := self.playlist[songName]
-			if songURL == "" {
-				retMessage += "NONE"
-			} else {
-				retMessage += songURL
-			}
+		switch command {
+			case "add", "delete":
+				self.commandQ.PushBack(message)
+				retMessage += "ack "
+				self.WriteDTLog(message)
+				self.requestTs+=1
+				commitAbort := self.CoordHandleParticipants(command, args)
+				if commitAbort {
+					retMessage += "commit"
+				} else {
+					retMessage += "abort"
+				}
+				lenStr := strconv.Itoa(len(retMessage))
+				retMessage = lenStr + "-" + retMessage
+			//Returns songURL if songName is in playlist
+			case "get":
+				retMessage += "resp "
+				songName := args[0]
+				songURL := self.playlist[songName]
+				if songURL == "" {
+					retMessage += "NONE"
+				} else {
+					retMessage += songURL
+				}
 
-			lenStr := strconv.Itoa(len(retMessage))
-			retMessage = lenStr + "-" + retMessage
+				lenStr := strconv.Itoa(len(retMessage))
+				retMessage = lenStr + "-" + retMessage
 
-		case "crash":
-			fmt.Println("Crashing immediately")
-			os.Exit(1)
-		//TODO
-		case "crashVoteREQ":
-			fmt.Println("Crashing after sending vote req to ... ")
-			self.crashStage = "vote-req"
-			self.sentTo = args
-			fmt.Println(args)
-		//TODO
-		case "crashPartialPreCommit":
-			fmt.Println("Crashing after sending precommit to ... ")
-			self.crashStage = "partial-precommit"
-			self.sentTo = args
-		//TODO
-		case "crashPartialCommit":
-			fmt.Println("Crashing after sending commit to ...")
-			self.crashStage = "partial-commit"
-			self.sentTo = args
+			case "crash":
+				fmt.Println("Crashing immediately")
+				os.Exit(1)
 			//TODO
-		case "crashAfterVote":
-			fmt.Println("Will crash after voting in next 3PC instance")
-			self.crashStage = "after-vote"
-		//TODO
-		case "crashBeforeVote":
-			fmt.Println("Will crash before voting in next 3PC instance")
-			self.crashStage = "before-vote"
-		//TODO
-		case "crashAfterAck":
-			fmt.Println("Will crash after sending ACK in next 3PC instance")
-			self.crashStage = "after-ack"
-		default:
-			retMessage += "Invalid command. This is the coordinator use 'add <songName> <songURL>', 'get <songName>', or 'delete <songName>'"
+			case "crashVoteREQ":
+				fmt.Println("Crashing after sending vote req to ... ")
+				self.crashStage = "vote-req"
+				self.sentTo = args
+				fmt.Println(args)
+			//TODO
+			case "crashPartialPreCommit":
+				fmt.Println("Crashing after sending precommit to ... ")
+				self.crashStage = "partial-precommit"
+				self.sentTo = args
+			//TODO
+			case "crashPartialCommit":
+				fmt.Println("Crashing after sending commit to ...")
+				self.crashStage = "partial-commit"
+				self.sentTo = args
+				//TODO
+			case "crashAfterVote":
+				fmt.Println("Will crash after voting in next 3PC instance")
+				self.crashStage = "after-vote"
+			//TODO
+			case "crashBeforeVote":
+				fmt.Println("Will crash before voting in next 3PC instance")
+				self.crashStage = "before-vote"
+			//TODO
+			case "crashAfterAck":
+				fmt.Println("Will crash after sending ACK in next 3PC instance")
+				self.crashStage = "after-ack"
+			default:
+				retMessage += "Invalid command. This is the coordinator use 'add <songName> <songURL>', 'get <songName>', or 'delete <songName>'"
 
 		}
 		connMaster.Write([]byte(retMessage))
@@ -150,6 +159,9 @@ func (self *Server) HandleMaster(connMaster net.Conn, err error) {
 
 	connMaster.Close()
 }
+
+
+
 
 //Coordinator sends and receives messages to and fro the participants (which includes itself)
 func (self *Server) CoordHandleParticipants(command string, args []string) bool {
@@ -164,59 +176,59 @@ func (self *Server) CoordHandleParticipants(command string, args []string) bool 
 	fmt.Println("Sending VOTE-REQ")
 	//Using switch to avoid having a lot of if-else statements
 	switch command {
-	case "add":
-		songName = args[0]
-		songURL = args[1]
-		message := command + " " + songName + " " + songURL
-		if self.crashStage != "vote-req" {
-			for _, otherPort := range self.upSet {
-				go self.MsgParticipant(otherPort, message, participantChannel) // vote-req
-			}
-		} else {
-			if len(self.sentTo) == 0 {
+		case "add":
+			songName = args[0]
+			songURL = args[1]
+			message := command + " " + songName + " " + songURL
+			if self.crashStage != "vote-req" {
+				for _, otherPort := range self.upSet {
+					go self.MsgParticipant(otherPort, message, participantChannel) // vote-req
+				}
+			} else {
+				if len(self.sentTo) == 0 {
+					fmt.Println("vote req sent, crashing now!")
+					os.Exit(1)
+				}
+				for _, otherID := range self.sentTo {
+					fmt.Println("stsarting iteration going through the sentTo list")
+					if otherPort, ok := self.upSet[otherID]; ok {
+						peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
+						if err != nil {
+							fmt.Println(err)
+						}
+						fmt.Fprintf(peerConn, message+"\n")
+					}
+					fmt.Println("going through the sentTo list")
+				}
 				fmt.Println("vote req sent, crashing now!")
 				os.Exit(1)
 			}
-			for _, otherID := range self.sentTo {
-				fmt.Println("stsarting iteration going through the sentTo list")
-				if otherPort, ok := self.upSet[otherID]; ok {
-					peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
-					if err != nil {
-						fmt.Println(err)
-					}
-					fmt.Fprintf(peerConn, message+"\n")
-				}
-				fmt.Println("going through the sentTo list")
-			}
-			fmt.Println("vote req sent, crashing now!")
-			os.Exit(1)
-		}
 
-	case "delete":
-		songName = args[0]
-		message := command + " " + songName
-		if self.crashStage != "vote-req" {
-			for _, otherPort := range self.upSet {
-				go self.MsgParticipant(otherPort, message, participantChannel) // vote-req
-			}
-		} else {
-			if len(self.sentTo) == 0 {
+		case "delete":
+			songName = args[0]
+			message := command + " " + songName
+			if self.crashStage != "vote-req" {
+				for _, otherPort := range self.upSet {
+					go self.MsgParticipant(otherPort, message, participantChannel) // vote-req
+				}
+			} else {
+				if len(self.sentTo) == 0 {
+					os.Exit(1)
+				}
+				for _, otherID := range self.sentTo {
+					if otherPort, ok := self.upSet[otherID]; ok {
+						peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
+						if err != nil {
+							fmt.Println(err)
+						}
+						fmt.Fprintf(peerConn, message+"\n")
+					}
+				}
 				os.Exit(1)
 			}
-			for _, otherID := range self.sentTo {
-				if otherPort, ok := self.upSet[otherID]; ok {
-					peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
-					if err != nil {
-						fmt.Println(err)
-					}
-					fmt.Fprintf(peerConn, message+"\n")
-				}
-			}
-			os.Exit(1)
-		}
 
-	default:
-		fmt.Println("Invalid command")
+		default:
+			fmt.Println("Invalid command")
 	}
 	//VOTE-REQ
 	yesVotes := 0
@@ -333,119 +345,118 @@ func (self *Server) ParticipantHandleCoord(message string, connCoord net.Conn) {
 	command = strings.Trim(command, "\n")
 
 	//On add or delete, this server records the input song's info and its add/delete operation for future 3PC stages
-	switch command {
 	//Sends no to coord if songUrl is bigger than self.pid + 5; yes otherwise -> records vote in DT log
-	case "add":
-		self.state = "aborted"
-		songName := messageSlice[1]
-		songURL := messageSlice[2]
-		if !self.isCoord {
-			self.requestTs+=1
-			self.WriteDTLog(message)
-		}
-		if self.crashStage == "before-vote" {
-			os.Exit(1)
-		}
-		songQuery := map[string]string{
-			"songName": songName,
-			"songURL":  songURL,
-		}
-		self.commandQ.PushBack("add")
-		self.songQuery = songQuery
-		urlSize := len(songURL)
-		pid, _ := strconv.Atoi(self.pid)
-		if urlSize > pid+5 {
-			connCoord.Write([]byte("no"))
-		} else {
-			connCoord.Write([]byte("yes")) // sending back to the coordinator, now need to wait for precommit
+	switch command {
+		case "add":
+			self.state = "aborted"
+			songName := messageSlice[1]
+			songURL := messageSlice[2]
+			if !self.isCoord {
+				self.requestTs+=1
+				self.WriteDTLog(message)
+			}
+			self.savedCommand = "add"
+			if self.crashStage == "before-vote" {
+				os.Exit(1)
+			}
+			songQuery := map[string]string{
+				"songName": songName,
+				"songURL":  songURL,
+			}
+			
+			self.songQuery = songQuery
+			urlSize := len(songURL)
+			pid, _ := strconv.Atoi(self.pid)
+			if urlSize > pid+5 {
+				connCoord.Write([]byte("no"))
+			} else {
+				connCoord.Write([]byte("yes")) // sending back to the coordinator, now need to wait for precommit
+				self.waitingFor = "precommit"
+				self.state = "uncertain"
+				if !self.isCoord {
+					self.WriteDTLog("yes")
+				}
+			}
+			if self.crashStage == "after-vote" {
+				os.Exit(1)
+			}
+		//Always send yes to coord and records vote in DT log
+		case "delete":
+			self.state = "aborted"
+			if !self.isCoord {
+				self.requestTs+=1
+				self.WriteDTLog(message)
+			} // record message before crashing
+			self.savedCommand = "delete"
+			if self.crashStage == "before-vote" {
+				os.Exit(1)
+			}
+			songName := messageSlice[1]		
+			songQuery := map[string]string{
+				"songName": songName,
+				"songURL":  "",
+			}
+			self.songQuery = songQuery
+
+			connCoord.Write([]byte("yes"))
 			self.waitingFor = "precommit"
 			self.state = "uncertain"
 			if !self.isCoord {
 				self.WriteDTLog("yes")
 			}
-		}
-		if self.crashStage == "after-vote" {
-			os.Exit(1)
-		}
-	//Always send yes to coord and records vote in DT log
-	case "delete":
-		self.state = "aborted"
-		if !self.isCoord {
-			self.requestTs+=1
-			self.WriteDTLog(message)
-		} // record message before crashing
-		if self.crashStage == "before-vote" {
-			os.Exit(1)
-		}
-		songName := messageSlice[1]
-		self.commandQ.PushBack("delete")
-		songQuery := map[string]string{
-			"songName": songName,
-			"songURL":  "",
-		}
-		self.songQuery = songQuery
-
-		connCoord.Write([]byte("yes"))
-		self.waitingFor = "precommit"
-		self.state = "uncertain"
-		if !self.isCoord {
-			self.WriteDTLog("yes")
-		}
-		if self.crashStage == "after-vote" {
-			os.Exit(1)
-		}
-
-	//Send back ack on precommit receipt
-	case "precommit":
-		if self.state == "uncertain" {
-			connCoord.Write([]byte("ack"))
-			self.waitingFor = "commit"
-			self.state = "committable"
-			if self.crashStage == "after-ack" {
+			if self.crashStage == "after-vote" {
 				os.Exit(1)
 			}
-		}
-	//Adds song to playlist or deletes song in playlist on commit receipt
-	case "commit":
-		fmt.Println("COMMITTING")
-		if self.state == "committable" {
-			request := self.commandQ.Front()
-			if request.Value == "add" {
-				self.playlist[self.songQuery["songName"]] = self.songQuery["songURL"]
-			} else {
-				delete(self.playlist, self.songQuery["songName"])
-			}
-			self.commandQ.Remove(request)
-			self.waitingFor = ""
-			self.state = "committed"
-			if !self.isCoord {
-				self.WriteDTLog("commit")
-			}
-		}
-	//Aborts 3PC on abort receipt
-	case "abort":
-		fmt.Println("ABORTING")
-		if self.state != "aborted" {
-			if !self.isCoord {
-				self.WriteDTLog("abort")
-			}
-			self.state = "aborted"
-			self.waitingFor = ""
-		}
-	case "state-req":
-		requestTs, _ := strconv.Atoi(messageSlice[1])
-		if requestTs > self.requestTs {
-			self.state = "aborted"
-			self.requestTs = requestTs
-		}
-		connCoord.Write([]byte(self.state)) // TODO: update state for each process
-	case "ur-elected":
-		self.isCoord = true
-		self.coordID = self.pid
 
-	//No valid message given
-	default:
-		connCoord.Write([]byte("Invalid message"))
+		//Send back ack on precommit receipt
+		case "precommit":
+			if self.state == "uncertain" {
+				connCoord.Write([]byte("ack"))
+				self.waitingFor = "commit"
+				self.state = "committable"
+				if self.crashStage == "after-ack" {
+					os.Exit(1)
+				}
+			}
+		//Adds song to playlist or deletes song in playlist on commit receipt
+		case "commit":
+			fmt.Println("COMMITTING")
+			if self.state == "committable" {
+				if self.savedCommand == "add" {
+					self.playlist[self.songQuery["songName"]] = self.songQuery["songURL"]
+				} else {
+					delete(self.playlist, self.songQuery["songName"])
+				}
+				self.waitingFor = ""
+				self.state = "committed"
+				if !self.isCoord {
+					self.WriteDTLog("commit")
+				}
+			}
+		//Aborts 3PC on abort receipt
+		case "abort":
+			fmt.Println("ABORTING")
+			if self.state != "aborted" {
+				if !self.isCoord {
+					self.WriteDTLog("abort")
+				}
+				self.state = "aborted"
+				self.waitingFor = ""
+			}
+		case "state-req":
+			requestTs, _ := strconv.Atoi(messageSlice[1])
+			if requestTs > self.requestTs {
+				self.state = "aborted"
+				self.requestTs = requestTs
+			}
+			connCoord.Write([]byte(self.state)) // TODO: update state for each process
+		case "ur-elected":
+			self.isCoord = true
+			self.coordID = self.pid
+
+		//No valid message given
+		default:
+			connCoord.Write([]byte("Invalid message"))
 
 	}
 }
@@ -467,18 +478,35 @@ func (self *Server) ReceivePeers(lPeer net.Listener) {
 		// No timeout, get the message and continue as normal
 		message := string(recvBuf[:n])
 		message = strings.TrimSuffix(message, "\n")
-		if message != "ping" {
-			self.ParticipantHandleCoord(message, connPeer)
-		} else if message == "playlist" {
-			/*
-			plJSON, _ := json.Marshal(self.playlist)
-			connPeer.Write(plJSON)*/
-		} else {
+		if message == "playlist" {
+			playlistMsg := ""
+			if self.requestTs == 0 {
+				playlistMsg = "0"
+			}else{
+				playlistMsg = strconv.Itoa(self.requestTs) + " "
+				songList := make([]string, 0)
+				for songName, songURL := range self.playlist{
+					songStr := songName + ":" + songURL
+					songList = append(songList, songStr)
+				}
+				playlistMsg += strings.Join(songList, " ")
+			}
+			connPeer.Write([]byte(playlistMsg))
+
+		} else if message == "crashed-up-set" {
+		//	fmt.Println(self.crashUpSet)
+			crashUpSetMsg := strings.Join(self.crashUpSet, " ")
+		//	fmt.Println(crashUpSetMsg)
+			connPeer.Write([]byte(crashUpSetMsg))
+
+		}else if message == "ping"{
 			if self.isCoord {
 				connPeer.Write([]byte(self.pid + " +"))
 			} else {
 				connPeer.Write([]byte(self.pid + " -"))
 			}
+		}else{
+			self.ParticipantHandleCoord(message, connPeer)
 		}
 		connPeer.Close()
 
@@ -637,6 +665,39 @@ func (self *Server) Recovery(file *os.File) {
 		}
 	}
 
+	for _, otherPort := range self.peers {
+			peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
+			if err != nil {
+				continue
+			}
+
+			fmt.Fprintf(peerConn, "playlist"+"\n")
+			response, _ := bufio.NewReader(peerConn).ReadString('\n')
+			responseSlice := strings.Split(response, " ")
+			fmt.Println(responseSlice[1:])
+			requestTs, _ := strconv.Atoi(responseSlice[0])
+			if requestTs >= self.requestTs && len(responseSlice) > 1{
+				tempPlaylist := make(map[string]string)
+				for _, song := range responseSlice[1:] {
+					songSlice := strings.Split(song, ":")
+					tempPlaylist[songSlice[0]] = songSlice[1]
+				}
+				self.playlist = tempPlaylist
+			}		
+	}
+
+}
+
+
+func (self *Server) WaitForLPF(){
+
+	for {
+		if self.foundLPF{
+			break
+		}
+		time.Sleep(1000 * time.Millisecond)
+	}
+
 }
 
 //Updates UP set on heartbeat replies
@@ -654,7 +715,9 @@ func (self *Server) Heartbeat(connMaster net.Conn, err error) {
 			}
 
 			fmt.Fprintf(peerConn, "ping"+"\n")
-			response, _ := bufio.NewReader(peerConn).ReadString('\n')
+
+			reader := bufio.NewReader(peerConn)
+			response, _ := reader.ReadString('\n')
 			responseSlice := strings.Split(response, " ")
 			pid := responseSlice[0]
 			coordBool := responseSlice[1]
@@ -662,6 +725,30 @@ func (self *Server) Heartbeat(connMaster net.Conn, err error) {
 			if coordBool == "+"{
 				tempCoordID = pid
 			}
+			peerConn.Close()
+			//fmt.Println(pid)
+			
+
+			if self.recoveryMode && len(self.crashUpSet) > 1 {
+				
+				peerConn, err = net.Dial("tcp", "127.0.0.1:"+otherPort)
+				if err != nil {
+					continue
+				}
+
+				fmt.Fprintf(peerConn, "crashed-up-set"+"\n")
+
+				reader = bufio.NewReader(peerConn)
+				response, _ = reader.ReadString('\n')
+				responseSlice = strings.Split(response, " ")
+				if len(responseSlice) == 1{
+					self.foundLPF = true
+				}
+				peerConn.Close() 
+
+			}
+
+
 		}
 		if !reflect.DeepEqual(tempAlive, self.upSet) {
 			pids := make([]string, 0)
@@ -692,17 +779,6 @@ func (self *Server) Heartbeat(connMaster net.Conn, err error) {
 		}
 
 		
-		// if just recovered, get the playlist from coord
-		/*
-		if self.recovery_mode && !self.is_coord {
-			coordConn, err := net.Dial("tcp", "127.0.0.1:"+self.up_set[self.coordID])
-			if err != nil {
-				continue
-			}
-			fmt.Fprintf(coordConn, "playlist"+"\n")
-			response, _ := bufio.NewReader(coordConn).ReadString('\n')
-			PL := json.Unmarshal(response)
-		}*/
 		time.Sleep(1000 * time.Millisecond)
 
 	}
@@ -752,6 +828,7 @@ func (self *Server) ReadDTLog() {
 		self.WriteDTLog("start\n")
 		fmt.Println("New log created for " + self.pid + ".")
 	} else {
+		self.foundLPF = false
 		self.recoveryMode = true
 		self.Recovery(file)
 	}
