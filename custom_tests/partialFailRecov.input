@@ -1,0 +1,16 @@
+0 start 2 10000
+1 start 2 10001
+-1 add song1 URL1
+0 crash
+-1 add song2 URL2
+0 start 2 10002
+1 crash
+-1 add song3 URL3
+1 start 2 10003
+0 get song1
+1 get song1
+0 get song2
+1 get song2
+0 get song3
+1 get song3
+exit

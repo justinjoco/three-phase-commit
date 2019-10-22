@@ -2,8 +2,6 @@ package main
 
 import (
 	"bufio"
-	"container/list"
-//	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -24,13 +22,11 @@ type Server struct {
 	isCoord          bool
 	state            string            //Saves the current state of process: TODO
 	songQuery        map[string]string //map containing the song's name and URL for deletion or adding
-	commandQ         *list.List        //Saved add or delete command
 	crashStage       string            //Initialized to "", could be "after_vote"||"before_vote"||"after_ack"||
 	// "vote_req"||"partial_precommit"||"partial_commit"
 	sentTo []string //A list of processes that the coordinator has sent command to before crash
 	coordID          string // Each process will keep track of the id of the current coord
 	crashUpSet       []string
-	waitingFor		 string
 	recoveryMode     bool // True if the process just recovered and DT log exists
 	savedCommand	 string
 	requestTs		 int
@@ -83,7 +79,7 @@ func (self *Server) HandleMaster(connMaster net.Conn, err error) {
 		retMessage := ""
 		// fmt.Println(message)
 		if self.recoveryMode {
-			if len(self.crashUpSet) >= 2{
+			if len(self.crashUpSet) >= 2 && len(self.upSet) == 1 {
 				self.WaitForLPF()
 			}
 			self.recoveryMode = false
@@ -92,7 +88,6 @@ func (self *Server) HandleMaster(connMaster net.Conn, err error) {
 		//Start 3PC instance
 		switch command {
 			case "add", "delete":
-				self.commandQ.PushBack(message)
 				retMessage += "ack "
 				self.WriteDTLog(message)
 				self.requestTs+=1
@@ -371,7 +366,6 @@ func (self *Server) ParticipantHandleCoord(message string, connCoord net.Conn) {
 				connCoord.Write([]byte("no"))
 			} else {
 				connCoord.Write([]byte("yes")) // sending back to the coordinator, now need to wait for precommit
-				self.waitingFor = "precommit"
 				self.state = "uncertain"
 				if !self.isCoord {
 					self.WriteDTLog("yes")
@@ -399,7 +393,6 @@ func (self *Server) ParticipantHandleCoord(message string, connCoord net.Conn) {
 			self.songQuery = songQuery
 
 			connCoord.Write([]byte("yes"))
-			self.waitingFor = "precommit"
 			self.state = "uncertain"
 			if !self.isCoord {
 				self.WriteDTLog("yes")
@@ -412,7 +405,6 @@ func (self *Server) ParticipantHandleCoord(message string, connCoord net.Conn) {
 		case "precommit":
 			if self.state == "uncertain" {
 				connCoord.Write([]byte("ack"))
-				self.waitingFor = "commit"
 				self.state = "committable"
 				if self.crashStage == "after-ack" {
 					os.Exit(1)
@@ -427,7 +419,6 @@ func (self *Server) ParticipantHandleCoord(message string, connCoord net.Conn) {
 				} else {
 					delete(self.playlist, self.songQuery["songName"])
 				}
-				self.waitingFor = ""
 				self.state = "committed"
 				if !self.isCoord {
 					self.WriteDTLog("commit")
@@ -441,7 +432,6 @@ func (self *Server) ParticipantHandleCoord(message string, connCoord net.Conn) {
 					self.WriteDTLog("abort")
 				}
 				self.state = "aborted"
-				self.waitingFor = ""
 			}
 		case "state-req":
 			requestTs, _ := strconv.Atoi(messageSlice[1])
@@ -791,6 +781,8 @@ func (self *Server) MsgParticipant(otherPort string, message string, channel cha
 	peerConn, err := net.Dial("tcp", "127.0.0.1:"+otherPort)
 	if err != nil {
 		fmt.Println(err)
+		channel <- ""
+		return
 	}
 
 	fmt.Fprintf(peerConn, message+"\n")

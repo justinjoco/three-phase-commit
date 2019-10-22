@@ -1,10 +1,8 @@
 package main
 
 import (
-	"container/list"
 	"os"
 	"strconv"
-	//"fmt"
 )
 
 func main() {
@@ -27,7 +25,7 @@ func main() {
 	}
 
 	server = Server{pid: serverId, peers: peers, masterFacingPort: masterFacingPort,
-		peerFacingPort: peerFacingPort, commandQ: list.New(), isCoord: false,
+		peerFacingPort: peerFacingPort, isCoord: false,
 		playlist: make(map[string]string), crashStage: "", recoveryMode: false, requestTs: 0}
 
 	server.Run()
