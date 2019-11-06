@@ -1,0 +1,9 @@
+0 start 3 10000
+1 start 3 10001
+2 start 3 10002
+-1 add song1 URL1
+1 crashAfterVote
+2 crashAfterVote
+-1 add song2 URL2
+0 get song1
+0 get song2

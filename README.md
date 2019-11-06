@@ -25,11 +25,7 @@ For each worker process you want to run, open a new window and go to this projec
 
 To stop all Go processes from running and destroy the DT logs, run `./stopall`.
 
-To mimic a master process talking to a worker process, open another Terminal window and do the following:
-* Use the command `nc localhost <portNum>` or `netcat localhost <portNum>` (depending on your OS) in order to open a connection with a worker process.
-* Use `get`, `alive`, or `broadcast <message>` in order to get that process's message log, its record of alive peers, or to broadcast a message from that process to other peers, respectively.
-
-Otherwise, use master.py to send your commands directly to the distributed processes.
+Use master.py to send your commands directly to the distributed processes.
 
 ### OS Testing Environment
 Our group used OSX Mojave 10.14.x and Ubuntu Linux to compile, run, and test this project.
