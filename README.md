@@ -11,6 +11,9 @@ Slip days used(total):
 
 * Zhilong Li (zl252): 2
 
+## General Overview
+We implemented Three Phase Commit, an atomic commit algorithm, by following and maintaining the specs and invariants described in "Distributed Recovery" by Bernstein, Goodman and Hadzilakos. We implemented tge roles of Coordinator and Participant, in which each node in the system is a participant, including the coordinator. Leader election and a termination protocol occurs whenever a coordinator dies, and generally, the living process with the lowest ID becomes the new coordinator. This implementation also tolerates total failure (in addition to partial failure) by ensuring each process writes to a log in stable storage. 
+
 ### Automated testing 
 Within the root directory of this project directory, run your test script with a master process here.
 For more inpromptu script testing, run `python master.py < <testFile>.input`, which will return the test output to stdout.
