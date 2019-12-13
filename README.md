@@ -9,7 +9,7 @@ Slip days used(total):
 
 * Justin (jaj263): 2
 
-* Zhilong Li (zl252): 2
+* Zhilong Li (zl242): 2
 
 ## General Overview
 We implemented Three Phase Commit, an distributed atomic commit algorithm, by following and maintaining the specs and invariants described in "Distributed Recovery" by Bernstein, Goodman and Hadzilakos. We implemented the roles of Coordinator and Participant, in which each node in the system is a participant, including the coordinator. Leader election and a termination protocol occur whenever a coordinator dies, and generally, the living process with the lowest ID becomes the new coordinator. This implementation also tolerates total failure and recovery (in addition to any partial failure) by ensuring each process writes to a log in stable storage. 
